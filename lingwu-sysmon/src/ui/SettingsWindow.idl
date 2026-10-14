@@ -1,0 +1,65 @@
+// SettingsWindow.idl - C++/WinRT component declaration.
+//
+// IMPORTANT: this file MUST stay pure ASCII.
+// MIDL reads source files using the system ANSI code page (936 on zh-CN),
+// not UTF-8. Chinese comments here raise C4819 ("the file contains a character
+// that cannot be represented in the current code page"), and this project
+// builds with /WX. Same class of trap as build.bat, the .ps1 scripts and
+// MainWindow.idl. Keep the Chinese text in the .xaml / .cpp files only.
+//
+// The runtimeclass name and namespace must match both the XAML x:Class
+// attribute and $(RootNamespace) in LingwuSysmon.vcxproj, or the XAML
+// compiler fails with WMC1002.
+//
+// Why a separate Window instead of a ContentDialog:
+//   * four settings with ComboBoxes need real vertical space; a ContentDialog
+//     would be cramped and its height behaviour on 200% DPI is awkward;
+//   * the project already reuses two long-lived ContentDialogs (confirm_ /
+//     notice_) and only one dialog may be open per XamlRoot at a time, so a
+//     settings dialog would compete with the end-task confirmation;
+//   * a dedicated window gets its own title bar and Mica backdrop, which is
+//     what a Win11 settings surface looks like.
+namespace LingwuSysmon
+{
+    [default_interface]
+    runtimeclass SettingsWindow : Microsoft.UI.Xaml.Window
+    {
+        SettingsWindow();
+
+        // Filled in by the main window before Activate() so the dialog opens on
+        // the values that are actually in effect right now.
+        //
+        // NOTE: primitive types are written WITHOUT the Windows.Foundation
+        // qualifier. Qualifying them (Windows.Foundation.Boolean) makes MIDL
+        // emit
+        //   error MIDL2011: unresolved type declaration: Windows.Foundation.Boolean
+        // because this file cannot import Windows.Foundation.idl -- that import
+        // triggers a MIDL2003 redefinition cascade over the whole SDK IDL chain
+        // (see the long note in ProcessRow.idl). MIDL 3.0 knows Boolean /
+        // Int32 / String / Double / UInt32 / UInt64 as built-ins, which is why
+        // ProcessRow.idl can declare String/Double/UInt32/UInt64 members
+        // unqualified. Same thing applies to parameters and return types.
+        void LoadFrom(Boolean aggregate,
+                      Int32 sortMode,
+                      Int32 intervalMs,
+                      Boolean autoStart);
+
+        // What the user ended up choosing. Only meaningful after the window
+        // closes with OK; the main window reads it from its Closed handler.
+        Boolean Accepted();
+
+        // The four chosen values, read back by the main window after Close().
+        // They have to live in the IDL (not just in the C++ header) because
+        // MainWindow only ever holds the *projected* winrt::LingwuSysmon::
+        // SettingsWindow. Without these declarations the compiler reports
+        //   error C2039: "ResultAggregate" is not a member of
+        //               "winrt::LingwuSysmon::SettingsWindow"
+        // (reproduced on this project before they were added).
+        // aggregate / sortMode / intervalMs are ini values; autoStart is what
+        // the user picked and what AutostartReconcile confirmed in the registry.
+        Boolean ResultAggregate  { get; };
+        Int32   ResultSortMode   { get; };
+        Int32   ResultIntervalMs { get; };
+        Boolean ResultAutoStart  { get; };
+    }
+}

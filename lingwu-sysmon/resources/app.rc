@@ -1,0 +1,35 @@
+#include <windows.h>
+#include <winver.h>
+
+// 资源 ID 固定为 1。platform/icon.cpp 用 MAKEINTRESOURCEW(1) 加载。
+// 绝不能改成从 exe 路径 LoadImageW(..., LR_LOADFROMFILE) —— 带了该标志
+// 就会把路径当图片文件解析、不走 PE 的 RT_GROUP_ICON，对任何 exe 都返回 NULL。
+1 ICON "app.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     0,0,1,0
+PRODUCTVERSION  0,0,1,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "CompanyName",      "LingwuLab"
+            VALUE "FileDescription",  "Lingwu SysMon - Windows System Monitor"
+            VALUE "FileVersion",      "0.0.1.0"
+            VALUE "InternalName",     "LingwuSysmon"
+            VALUE "OriginalFilename", "LingwuSysmon.exe"
+            VALUE "ProductName",      "Lingwu SysMon"
+            VALUE "ProductVersion",   "0.0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

@@ -1,0 +1,20 @@
+// MainWindow.idl - C++/WinRT component declaration.
+//
+// IMPORTANT: this file MUST stay pure ASCII.
+// MIDL reads source files using the system ANSI code page (936 on zh-CN),
+// not UTF-8. Chinese comments here raise C4819 ("the file contains a character
+// that cannot be represented in the current code page"), and this project
+// builds with /WX. Same class of trap as build.bat and the .ps1 scripts.
+//
+// The runtimeclass name and namespace must match both the XAML x:Class
+// attribute and $(RootNamespace) in LingwuSysmon.vcxproj, or the XAML
+// compiler fails with WMC1002.
+
+namespace LingwuSysmon
+{
+    [default_interface]
+    runtimeclass MainWindow : Microsoft.UI.Xaml.Window
+    {
+        MainWindow();
+    }
+}

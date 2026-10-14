@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="Lingwu.SysMon" version="0.0.1.0" processorArchitecture="amd64"/>
+  <description>Lingwu SysMon - Windows System Monitor</description>
+
+  <!-- Per-Monitor V2: 高分屏下主界面不会糊。
+       WinUI 3 自身也要求 PerMonitorV2，manifest 与运行期声明必须一致。 -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+
+  <!-- supportedOS 是未打包应用必须声明的：缺它会导致平台 API 行为降级
+       （例如 DWM / 输入 / 主题相关的版本判定会退回 Win7 时代的保守路径）。
+       这一个 GUID 同时覆盖 Windows 10 与 Windows 11。 -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+
+  <!-- 刻意不声明 Microsoft.Windows.Common-Controls v6 依赖：
+       WinUI 3 走的是自己的 XAML 控件栈，不经过 comctl32，
+       声明了只会白拉 comctl32.dll 进进程。 -->
+</assembly>

@@ -1,0 +1,6 @@
+# 仓库内统一存 LF；检出时的行尾由下面的规则显式决定，不受各人 autocrlf 影响
+* text=auto eol=lf
+
+# cmd.exe 在 label/goto 附近解析纯 LF 会出错，强制 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

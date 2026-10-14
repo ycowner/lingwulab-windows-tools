@@ -1,0 +1,16 @@
+# ---- 构建产物（由 lingwu-sysmon\build.bat 重新生成） ----
+/lingwu-sysmon/build/
+/lingwu-sysmon/dist/
+/lingwu-sysmon/obj/
+
+# ---- Visual Studio 本机状态 ----
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.pdb
+*.ilk
+
+# ---- 一次性内存测量原始数据（用 tools\mem.ps1 重新生成） ----
+/lingwu-sysmon/tools/_run*.csv
