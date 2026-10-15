@@ -215,6 +215,11 @@ jobs:
           Write-Host "`nPublished: https://github.com/$repo/releases/tag/$tag"
 
       # ---- post-check ----------------------------------------------------
+      # An actual gate, not a log line: if the release exists but the binary
+      # did not land on it, that is a failed release and the run must say so.
+      # Note `gh release view` has no isLatest field (that is a `release list`
+      # field) -- asking for it makes gh exit non-zero with
+      # "Unknown JSON field".
       - name: Confirm the asset is on the release
         shell: pwsh
         env:
@@ -223,9 +228,29 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $repo = $env:GITHUB_REPOSITORY
           $tag  = '${{ steps.ver.outputs.tag }}'
-          gh release view $tag --repo $repo --json tagName,isLatest,isPrerelease,assets `
-            --jq '{tag: .tagName, latest: .isLatest, prerelease: .isPrerelease,
-                   assets: [.assets[] | {name: .name, size: .size}]}'
+          $ver  = '${{ steps.ver.outputs.version }}'
+          $want = "LingwuSysmon-$ver-win64.exe"
+
+          $raw = gh release view $tag --repo $repo --json tagName,name,isDraft,isPrerelease,assets,url
+          if ($LASTEXITCODE -ne 0) { throw "gh release view failed for $tag." }
+          $rel = $raw | ConvertFrom-Json
+
+          $names = @($rel.assets | ForEach-Object { $_.name })
+          Write-Host ("release : {0}" -f $rel.tagName)
+          Write-Host ("title   : {0}" -f $rel.name)
+          Write-Host ("draft   : {0}   prerelease: {1}" -f $rel.isDraft, $rel.isPrerelease)
+          Write-Host ("url     : {0}" -f $rel.url)
+          foreach ($a in $rel.assets) {
+              Write-Host ("  asset : {0}  {1:N1} MB" -f $a.name, ($a.size / 1MB))
+          }
+
+          if ($names -notcontains $want) {
+              throw "Release $tag was created but '$want' is not on it. Assets: $($names -join ', ')"
+          }
+          if ($rel.isDraft -or $rel.isPrerelease) {
+              throw "Release $tag came out as draft=$($rel.isDraft) prerelease=$($rel.isPrerelease); expected a public release."
+          }
+          Write-Host "`nOK: $want is published."
 
       # ---- advisory only -------------------------------------------------
       # The in-repo default in make-sfx.ps1 drives LOCAL builds; the tag drives
