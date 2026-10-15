@@ -22,8 +22,12 @@ if "%~1"=="" (
 set "VER=%~1"
 set "EXE=%OUT%\LingwuSysmon-%VER%-win64.exe"
 
-set "VSPATH="
-for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+rem Toolchain location. See ..\build.bat for the resolution order and why
+rem LINGWU_VSPATH exists: CI must pin v144 explicitly rather than let vswhere
+rem guess, because the runner image ships VS 2022 next to VS 2026.
+set "VSPATH=%LINGWU_VSPATH%"
+if "%VSPATH%"=="" set "VSPATH="
+if "%VSPATH%"=="" for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
 if "%VSPATH%"=="" set "VSPATH=C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools"
 
 if not exist "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" (
@@ -68,6 +72,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-for %%F in ("%EXE%") do echo.
-echo [OK] version %VER% - %%~nxF = %%~zF bytes
+echo.
+rem %%~nxF / %%~zF only expand inside a FOR body. Outside one they print as the
+rem literal text "%%~nxF", which made this line useless exactly when it mattered
+rem (confirming which artifact a release just produced).
+for %%F in ("%EXE%") do echo [OK] version %VER% - %%~nxF = %%~zF bytes
 exit /b 0

@@ -5,6 +5,7 @@
 # pwsh is what the rest of this repo's tooling uses.
 #
 #   pwsh -NoProfile -File .\packaging\make-sfx.ps1
+#   pwsh -NoProfile -File .\packaging\make-sfx.ps1 -Version 0.1.0
 #
 # Steps:
 #   1. collect dist\Release into build\pack\payload.bin (custom LSFX v1 format,
@@ -16,7 +17,28 @@
 # The build id embedded in the payload becomes the extraction folder name, so a
 # rebuilt launcher never reuses the previous release's extracted files.
 
+param(
+    # Three-part release version (e.g. 0.0.1).
+    #
+    # The release CI passes this in, derived from the git tag
+    # (lingwu-sysmon-vX.Y.Z), so a published artifact can never disagree with the
+    # tag it was published under -- the tag is authoritative for releases, this
+    # literal is authoritative for local builds. When the two diverge, the
+    # release workflow prints a notice so the stale literal gets updated; it
+    # deliberately does not fail the build, because a bookkeeping mismatch in
+    # this file must never block a correctly-tagged release.
+    [string]$Version = '0.0.1'
+)
+
 $ErrorActionPreference = 'Stop'
+
+# Reject anything that would produce a broken file name / VERSIONINFO block.
+# An unvalidated tag-derived string is the realistic way this goes wrong:
+# a typo'd or annotated tag ("lingwu-sysmon-v1.0", "v1.0.0-rc1") would
+# otherwise flow straight into the launcher name and rc.exe FILEVERSION.
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Version '$Version' is not a three-part version (expected e.g. 0.0.1)."
+}
 
 $here  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $root  = Split-Path -Parent $here
@@ -35,14 +57,17 @@ if (-not (Test-Path $exe)) { throw "dist\Release\LingwuSysmon.exe not found." }
 
 # ---- version: single source of truth ------------------------------------------
 # Every version surface (output file name, payload build id, the launcher's
-# VERSIONINFO block) is derived from these two numbers, and build-sfx.bat is
+# VERSIONINFO block) is derived from this one number, and build-sfx.bat is
 # handed the payload build id instead of keeping its own copy. Keep it that way:
 # a second copy of the version string is exactly the kind of thing that silently
 # drifts -- the launcher would then ship a version different from its own name.
 #
+# The only in-repo literal lives in the $Version parameter default above. Do not
+# reintroduce one here.
+#
 # Four-part form goes into VERSIONINFO (rc.exe wants a.b.c.d);
 # three-part form goes into the file name and the extraction folder name.
-$ver       = '0.0.1'
+$ver       = $Version
 $verQuad   = $ver + '.0'
 $verComma  = (($verQuad -split '\.') -join ',')
 

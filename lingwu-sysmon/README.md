@@ -559,12 +559,28 @@ AppWindow().MoveAndResize(RectInt32{
 |---|---|---|
 | `resources/app.rc` | `0.0.1.0` | exe 的 `FileVersion` / `ProductVersion`（属性对话框「详细信息」页） |
 | `resources/app.manifest` | `0.0.1.0` | `assemblyIdentity` 的 version |
-| `packaging/make-sfx.ps1` 的 `$ver` | `0.0.1` | **唯一真源**：壳的 VERSIONINFO、输出文件名、buildId 都由它派生 |
+| `packaging/make-sfx.ps1` 的 `$Version` 参数默认值 | `0.0.1` | **本地构建**的真源：壳的 VERSIONINFO、输出文件名、buildId 都由它派生 |
 | 本文档的示例命令 | `0.0.1` | 文档，改版本时记得跟着改 |
 
 `make-sfx.ps1` 把版本当参数传给 `build-sfx.bat`（`build-sfx.bat 0.0.1`），
 **`.bat` 里没有版本字面量** —— 两处各存一份是必然漂移点，会出现
 「文件名是 0.0.1、内嵌版本资源还是别的号」这种只有右键看属性才发现的错位。
+
+### 打包时指定版本
+
+```pwsh
+pwsh -NoProfile -File .\packaging\make-sfx.ps1            # 用脚本里的默认值
+pwsh -NoProfile -File .\packaging\make-sfx.ps1 -Version 0.1.0
+```
+
+参数必须是三段式（`X.Y.Z`），否则脚本会立即抛出并中止——tag 写错时
+不会流进壳的文件名或 `FILEVERSION`。
+
+**发布时版本由 tag 决定，不由脚本默认值决定。** `release-sysmon.yml` 从
+tag `lingwu-sysmon-vX.Y.Z` 解析出版本号再用 `-Version` 注入，所以产物
+不可能和它所在的 tag 对不上。工作流收尾时会比对脚本默认值与 tag，不一致
+就打 warning 提醒你更新——但不会因此让发版失败。详见根目录 README 的
+「发布」一节。
 
 > 别把 `LSFX v1` 误当成产品版本：那是 `packaging\sfx_main.cpp` 自定义负载格式的
 > 格式号，与产品版本无关，改版本号时不要动它。
