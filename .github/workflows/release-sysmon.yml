@@ -154,17 +154,20 @@ jobs:
           $body = if ($subjects) {
               ($subjects | ForEach-Object { "- $_" }) -join "`n"
           } else {
-              '_No user-facing commits recorded for this tag._'
+              '_本次 tag 没有面向用户的提交记录。_'
           }
 
+          # Release notes are Chinese by default. Keep only what must stay
+          # verbatim in English: the product name, version numbers, commit
+          # subjects (reproduced as written, not translated), file names and URLs.
           $notes = @"
           ## Lingwu SysMon v$ver
 
-          Portable single-file build for Windows x64.
+          Windows x64 单文件免安装版，解压即用。
 
           $body
 
-          Full changelog: $link
+          完整变更记录：$link
           "@
 
           $path = Join-Path $env:RUNNER_TEMP 'release-notes.md'
