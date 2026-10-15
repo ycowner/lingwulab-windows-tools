@@ -44,6 +44,18 @@ runner 上重新构建、打包成单文件 SFX，然后创建 GitHub Release �
 用 `-` 而不是 `/` 分隔是有意的：tag 里带斜杠虽然更常见，但下载链接里的
 斜杠必须编码成 `%2F`，任何脚本化引用都会踩坑。
 
+### commit 约定
+
+**commit 标题写中文。** 这一点直接决定 release notes 长什么样：notes 里的
+提交列表是 `git log --pretty=format:'%s'` 的原样输出，workflow 不做任何翻译。
+所以标题是英文，notes 就永远半中半英。
+
+不改标题语言的两条退路：把 notes 里的提交列表删掉只留 compare 链接，
+或者在 workflow 里维护一份人工撰写的中文 changelog。前者丢信息，后者
+需要人每次发版都记得维护。
+
+产品名、版本号、文件名、tag 名、URL 和代码标识符保持原样，不翻译。
+
 ### 版本号从哪来
 
 发布时 **tag 是唯一权威**。CI 从 tag 解析出版本号并传给
