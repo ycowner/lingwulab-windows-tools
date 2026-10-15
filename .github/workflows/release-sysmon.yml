@@ -182,8 +182,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag   = '${{ steps.ver.outputs.tag }}'
           $ver   = '${{ steps.ver.outputs.version }}'
-          $asset = '${{ steps.asset.outputs }}'
+          # Must name the output key. `${{ steps.asset.outputs }}` interpolates
+          # the whole outputs *map*, which GitHub renders as the literal string
+          # "Object" -- gh then fails looking for a file of that name.
+          $asset = '${{ steps.asset.outputs.asset }}'
           $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+
+          if (-not (Test-Path $asset)) {
+              throw "Asset path from the previous step does not exist: '$asset' (was steps.asset.outputs the literal string 'Object'?)"
+          }
 
           # Idempotent: a re-run of the same tag replaces its release. Delete
           # through the API so the tag itself is never touched.
@@ -192,6 +199,7 @@ jobs:
           if ($LASTEXITCODE -eq 0 -and $id) {
             Write-Host "Release $tag already exists (id $id); replacing it."
             gh api -X DELETE "repos/$repo/releases/$id" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Failed to delete existing release $tag." }
           }
 
           gh release create $tag $asset `
@@ -199,6 +207,10 @@ jobs:
             --title "Lingwu SysMon v$ver" `
             --notes-file $notes `
             --latest
+          # gh exiting non-zero does NOT fail a PowerShell step on its own, so
+          # check it here. Without this the step printed "Published" and then
+          # died on whatever the last command happened to return.
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed (exit $LASTEXITCODE)." }
 
           Write-Host "`nPublished: https://github.com/$repo/releases/tag/$tag"
 
