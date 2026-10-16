@@ -1,0 +1,463 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <!-- 必须与 lingwu-sysmon 用不同的 GUID：沿用同一个会让 VS 的项目缓存
+         （.vs 目录、obj 的中间产物索引）串味，两个工程的中间文件会互相污染。 -->
+    <ProjectGuid>{3B9D4E17-52C8-4A63-9E1F-7D0B5A8C2E41}</ProjectGuid>
+    <RootNamespace>LingwuServiceManager</RootNamespace>
+    <DefaultLanguage>zh-CN</DefaultLanguage>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+
+    <!-- 编译期用最新 SDK（API 面最全），但声明最低支持 Win10 1809。
+         这两个属性是 C++ 项目专用的双版本控制，缺一不可。
+         所有高于 17763 的能力（Mica / 圆角）都必须走 platform/window_decor.h 的运行时门控。 -->
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
+
+    <!-- 未打包（unpackaged）。设为 None 后 MSBuild 不生成 MSIX。
+         权限模型是「默认普通权限启动，需要提权时由用户点提权重启」，
+         所以 resources\app.manifest 里**刻意不写** requireAdministrator。 -->
+    <AppxPackage>false</AppxPackage>
+    <WindowsPackageType>None</WindowsPackageType>
+
+    <!--
+      自包含部署：输出目录带全量 Windows App Runtime DLL，并由官方目标生成一份
+      合并后的 app.manifest（把所有 WinRT 服务器就地注册成 <asmv3:file>），
+      用它替代框架包。目标机**不需要**预装 Windows App Runtime。
+
+      为什么默认开启：本工程要分发给不懂技术的用户，"对方先装运行时"
+      是不成立的要求。框架依赖模式的产物只有 ~1 MB，但双击后是
+      「进程活着、没窗口、不崩、事件日志空白」，几乎无法自查。
+
+      代价：输出目录从 ~1 MB 涨到一百多 MB。
+      想要小包时命令行覆盖即可：
+          build.bat -p:WindowsAppSDKSelfContained=false
+    -->
+    <WindowsAppSDKSelfContained Condition="'$(WindowsAppSDKSelfContained)'==''">true</WindowsAppSDKSelfContained>
+    <AppContainerApplication>false</AppContainerApplication>
+
+    <UseWinUI>true</UseWinUI>
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
+
+    <!-- PlatformToolset 必须放在 Globals（也就是 Microsoft.Cpp.props 导入之前）。
+         Microsoft.Cpp.props 在那里就要算出 _ToolsetFound；写进后面的 Configuration 组
+         属性就太晚了，MSBuild 会报 MSB8020「找不到平台工具集」——即使文件夹其实存在。
+         本机实际安装的是 v145（MSVC 14.51）。 -->
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup Label="UserMacros" />
+
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Configuration">
+    <LinkIncremental Condition="'$(Configuration)'=='Release'">false</LinkIncremental>
+    <LinkIncremental Condition="'$(Configuration)'=='Debug'">true</LinkIncremental>
+    <OutDir>$(ProjectDir)dist\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\obj\$(Configuration)\</IntDir>
+
+    <!--
+      必须在 Microsoft.Cpp.targets 导入**之前**把 GeneratedFilesDir 定死。
+
+      Microsoft.Windows.CppWinRT.targets 里 XamlMetaDataProviderCpp 的求值
+      （算裸的 "XamlMetaDataProvider.cpp"）发生在 GeneratedFilesDir 的默认赋值**之前**，
+      同一个顶层 PropertyGroup 里按顺序求值，于是官方目标把包装文件
+      写到了工程根目录，$(IntDir)Generated Files\ 下永远不会有这个文件。
+      抢先定义就能让两条路径都指向正确位置。
+    -->
+    <GeneratedFilesDir>$(IntDir)Generated Files\</GeneratedFilesDir>
+
+    <!--
+      把 XAML 标记编译显式接进 C++ 的三段式构建。
+
+      WinUI 3 原生 C++ 的 XAML 编译在 BuildTools 上没有任何现成调度点：
+      MarkupCompilePass1 / Pass2 只挂在 PrepareResourcesDependsOn 里，
+      那是**托管**构建的入口；而本工程是纯原生，走 BuildSteps。
+      不补这两步，MainWindow.xaml.g.h 永远不生成。
+
+      顺序有讲究：
+        Pass1 放 BuildGenerateSources **之前** —— 它只做类型发现；
+        Pass2 放**之后** —— 它要用 BuildGenerateSources 产出的合并 winmd。
+
+      这里**不要**加 CompileXamlGeneratedFiles：那个目标专编
+      CompilerIteration == 'XamlGenerated' 的条目，但整个 v180 树里没有任何地方
+      引用它，且 ComputeCLOutputs 算 @(_Obj) 时把这个标记排除在外 ——
+      挂上去的条目会被编译成 .obj 却永远不进 @(Link)，
+      症状是「全部编译通过，链接报 22 个未解析的外部符号」。
+      所以 XAML 生成代码一律走普通 ClCompile 通道，标记摘干净。
+    -->
+    <BuildSteps>ResolveReferences; PrepareForBuild; InitializeBuildStatus; MarkupCompilePass1; BuildGenerateSources; MarkupCompilePass2; BuildCompile; BuildLink</BuildSteps>
+  </PropertyGroup>
+
+  <ImportGroup Label="ExtensionSettings" />
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <WarningLevel>Level3</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <!-- $(GeneratedFilesDir) 显式列出：cppwinrt 的组件头（MainWindow.g.h 等）住在这里，
+           src\pch.h 末尾的「XAML 代码生成桥接」靠 __has_include 找到它；
+           隐式依赖 CppWinRT targets 的 ItemDefinitionGroup 追加不够稳，实测会漏。
+           $(IntDir) 与 $(IntDir)src\ui：XAML 编译器的两类产出位置不同 ——
+           · MainWindow.xaml.g.h / App.xaml.g.h 镜像 .xaml 的相对目录
+           · XamlTypeInfo.xaml.g.h 之类直接落在 $(IntDir) 根下。
+           cppwinrt 生成的 MainWindow.g.h 用 __has_include("MainWindow.xaml.g.h")
+           决定要不要带上 XAML 代码后置头；目录不在 include 路径上会**静默**退化成
+           没有代码生成的空壳（编译能过，InitializeComponent() 却不存在的症状）。 -->
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(IntDir);$(IntDir)src\ui;$(GeneratedFilesDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_UNICODE;UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <!-- 静态 CRT：不依赖 VC++ Redistributable，保持绿色免依赖。
+           RuntimeLibrary 是 **ClCompile** 属性，写在下面的 <Link> 组里会被静默忽略，
+           然后由 Microsoft.Cpp.Default.props 填成 /MD —— 症状是链接期多出
+           MSVCP140.dll / VCRUNTIME140.dll 的导入。
+           核对办法：看 LingwuServiceManager.tlog\CL.command.1.tlog 里的 /c 命令行有没有 /MD。 -->
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <SDLCheck>true</SDLCheck>
+      <!-- 源码是 UTF-8，MSVC 默认按本地代码页读，不加这个会编译失败 -->
+      <AdditionalOptions>/utf-8 /bigobj %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <!-- PDB 留在中间目录，不进部署目录（Release 的 PDB 有 50 MB+，
+           比应用本体大两个数量级）。 -->
+      <ProgramDatabaseFile>$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
+      <!-- advapi32.lib 是本工程**最关键**的一条：服务控制管理器的全部 API
+           （OpenSCManager / EnumServicesStatusExW / CreateServiceW / …）都在它里面。
+           漏了它就是一批 LNK2019，而且报错信息完全指不到「服务」两个字。
+           不需要 iphlpapi.lib（不做网络统计）。 -->
+      <AdditionalDependencies>user32.lib;gdi32.lib;shell32.lib;dwmapi.lib;advapi32.lib;ole32.lib;oleaut32.lib;version.lib;rpcrt4.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- map 文件：崩在某个地址时能把 RVA 直接对到函数名。
+           Release 下没有公开符号，线上没有 PDB 时也常常拿不到行号，
+           map 是最后一条可靠线索。体积可忽略，构建开销可忽略，保留。 -->
+      <GenerateMapFile>true</GenerateMapFile>
+      <MapFileName>$(IntDir)$(TargetName).map</MapFileName>
+      <EnableCOMDATFolding Condition="'$(Configuration)'=='Release'">true</EnableCOMDATFolding>
+      <OptimizeReferences Condition="'$(Configuration)'=='Release'">true</OptimizeReferences>
+    </Link>
+    <Manifest>
+      <AdditionalManifestFiles>$(ProjectDir)resources\app.manifest</AdditionalManifestFiles>
+    </Manifest>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>$(ProjectDir)resources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ResourceCompile>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="src\pch.cpp">
+      <!-- pch.cpp 自己要 Create，不能跟其它源文件一样 Use，
+           否则它自己会去找一个还不存在的 .pch -->
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\platform\window_decor.cpp" />
+    <!-- 单实例（互斥 + HWND 共享映射）。纯 Win32。 -->
+    <ClCompile Include="src\platform\single_instance.cpp" />
+
+    <!-- 数据层。零 UI 依赖，可独立跑 selftest 开关。
+         注意：命令行开关名本身带两个连字符，**不要**把它写进 XML 注释里 ——
+         XML 注释中不允许出现连续的 ASCII 连字符，MSBuild 会报 MSB4025
+         「未能加载项目文件」。 -->
+    <ClCompile Include="src\core\controller.cpp" />
+    <ClCompile Include="src\core\privilege.cpp" />
+    <ClCompile Include="src\core\scm.cpp" />
+    <ClCompile Include="src\core\selftest.cpp" />
+    <ClCompile Include="src\core\settings.cpp" />
+
+    <ClCompile Include="src\ui\App.xaml.cpp" />
+    <ClCompile Include="src\ui\MainWindow.xaml.cpp" />
+    <!-- 新建服务窗口。与 MainWindow 同款：自己的代码后置 .cpp，
+         事件全在 .cpp 里挂 lambda，不走 XAML 的 Click= 处理器。 -->
+    <ClCompile Include="src\ui\CreateServiceWindow.xaml.cpp" />
+    <!-- ServiceRow 的链接接线：winrt_make_LingwuServiceManager_ServiceRow 定义在
+         cppwinrt 生成的 ServiceRow.g.cpp 里，必须恰好一个编译单元引入它。
+         放在独立文件里，放进 ServiceRow.h 会 LNK2005（该头会被多个 TU 间接包含）。 -->
+    <ClCompile Include="src\ui\service_row_glue.cpp" />
+    <!-- XAML 类型表生成代码的包装编译单元。必须单独成文件：XamlTypeInfo.g.cpp
+         要引用 implementation::MainWindow 与 implementation::CreateServiceWindow，
+         而那两个是你在各自 .xaml.h 里声明的，不在自己的 include 链里。
+         PrecompiledHeader 走 Use（它第一行就 include 了 pch.h，/Yu 不冲突），
+         但 /WX 只对**手写**代码保持严格，生成代码不在其列。 -->
+    <ClCompile Include="src\ui\xaml_typeinfo.cpp">
+      <TreatWarningAsError>false</TreatWarningAsError>
+    </ClCompile>
+    <!-- C++/WinRT 组件清单，必须参与编译，否则 runtimeclass 不会注册 -->
+    <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="src\pch.h" />
+    <ClInclude Include="src\platform\single_instance.h" />
+    <ClInclude Include="src\platform\trace.h" />
+    <ClInclude Include="src\platform\window_decor.h" />
+    <ClInclude Include="src\core\controller.h" />
+    <ClInclude Include="src\core\privilege.h" />
+    <ClInclude Include="src\core\scm.h" />
+    <ClInclude Include="src\core\selftest.h" />
+    <ClInclude Include="src\core\service_model.h" />
+    <ClInclude Include="src\core\settings.h" />
+    <ClInclude Include="src\ui\App.xaml.h" />
+    <ClInclude Include="src\ui\CreateServiceWindow.xaml.h" />
+    <ClInclude Include="src\ui\MainWindow.xaml.h" />
+    <ClInclude Include="src\ui\ServiceRow.h" />
+  </ItemGroup>
+
+  <!--
+    C++/WinRT 的代码后置类必须在 IDL 里声明成 runtimeclass，
+    midl + cppwinrt 才会生成 .g.h/.g.cpp，XAML 的 x:Class 才找得到类型
+    （否则 WMC1002）。名字与命名空间必须同时匹配 x:Class 和 $(RootNamespace)。
+
+    只有两个 XAML 页面需要 runtimeclass 声明。App 是 ApplicationDefinition，
+    它的 runtimeclass 由 XAML 编译器直接生成，官方模板里也没有 App.idl。
+
+    IDL 必须保持纯 ASCII：midl 按系统 ANSI 码页（zh-CN 是 936）读文件，
+    里面有中文会报 C4819，而本工程开了 /WX 会直接失败。
+  -->
+  <ItemGroup>
+    <Midl Include="src\ui\MainWindow.idl">
+      <SubType>Code</SubType>
+      <!-- DependentUpon 只标 MainWindow.xaml；同文件里的
+           CreateServiceWindow 由下面那条 Item 单独关联。 -->
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+    </Midl>
+    <Midl Include="src\ui\ServiceRow.idl">
+      <SubType>Code</SubType>
+    </Midl>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ApplicationDefinition Include="src\ui\App.xaml" />
+    <Page Include="src\ui\MainWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="src\ui\CreateServiceWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ResourceCompile Include="resources\app.rc" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="resources\app.manifest" />
+  </ItemGroup>
+
+  <!--
+    NuGet 引用与 lingwu-sysmon 完全一致，**不要升版本**：
+    · Microsoft.WindowsAppSDK 2.5.1     WinUI 3 运行时 + XAML 编译器 + winmd
+    · Microsoft.Windows.CppWinRT 3.0.260818.1
+      提供 cppwinrt.exe：WinUI 的 Microsoft.UI.* C++/WinRT 投影头不在 SDK 里，
+      也不在任何 NuGet 包的 include 目录里（只有 Microsoft.UI.Xaml.winmd），
+      必须由 cppwinrt 在构建时从 winmd 生成。缺它就编不过任何 WinUI 3 头文件。
+    · Microsoft.Windows.SDK.BuildTools 10.0.26100.4654
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.CppWinRT" Version="3.0.260818.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <!--
+    WMC1007「Cannot resolve metadata for WinUI types」的修法（从 lingwu-sysmon 照搬）。
+
+    取证结论（-t:DiagDumpRefs 实测）：
+      · @(Reference) 里有 52 个 .winmd，AppSDK 的元数据全都在
+      · @(ReferencePath) 里没有 AppSDK 的任何一个
+      · 于是 MarkupCompilePass1（传 ReferenceAssemblies）与 MarkupCompilePass2
+        （传 WinMDReferenceToCompile）两个通道都拿不到 WinUI 类型。
+
+    根因：buildTransitive\native\Microsoft.WinUI.References.targets 把**完整路径**
+    塞进了 <Reference Include=...>，而 MSBuild 的约定是 Include 放程序集标识、
+    路径放 HintPath，于是 RAR 没能把它们解析进 @(ReferencePath)。
+
+    路径形态在实测中有两种，必须分开收：
+      · WinUI / Foundation / InteractiveExperiences 的 winmd —— Identity 就是完整路径
+      · 聚合包列出的 Microsoft.Windows.*.winmd —— Identity 是裸文件名，
+        真实位置在 HintPath；两种都收、再用 Exists 过滤掉解析不了的。
+  -->
+  <Target Name="PopulateWinUIWinMDReferences"
+          BeforeTargets="MarkupCompilePass1;MarkupCompilePass2"
+          Condition="'$(IsNativeLanguage)' == 'true' And '@(_WinUIWinMD)' == ''">
+    <ItemGroup>
+      <_WinUIWinMD Include="@(Reference)"
+                   Condition="'%(Reference.Extension)' == '.winmd' And $([System.IO.Path]::IsPathRooted('%(Reference.Identity)')) And Exists('%(Reference.Identity)')" />
+      <_WinUIWinMD Include="@(Reference->'%(HintPath)')"
+                   Condition="'%(Reference.Extension)' == '.winmd' And '%(Reference.HintPath)' != '' And Exists('%(Reference.HintPath)')" />
+
+      <!-- MarkupCompilePass1 读的是 @(ReferencePath) -->
+      <ReferencePath Include="@(_WinUIWinMD)">
+        <Private>false</Private>
+      </ReferencePath>
+      <!-- MarkupCompilePass2 读的是 @(WinMDReferenceToCompile) -->
+      <WinMDReferenceToCompile Include="@(_WinUIWinMD)" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    把 XAML 代码生成链产出的编译单元接进 @(ClCompile)。
+
+    挂点选 BeforeTargets="ClCompile" 而不是 AfterTargets="MarkupCompilePass2"：
+    增量构建时 MarkupCompilePass2 可能整体不执行，挂在它后面就跟着不跑，
+    错误原样复现（实测踩过）。ClCompile 之前是必然到达的挂点，且此时
+    CppWinRTComputeXamlGeneratedCompileInputs 已经跑完，我们才有能力把它打的
+    CompilerIteration 标记摘掉。
+  -->
+  <Target Name="AddXamlGeneratedSourcesToClCompile" BeforeTargets="ClCompile">
+    <ItemGroup>
+      <_XamlGen Include="$(XamlMetaDataProviderCpp)"              Condition="Exists('$(XamlMetaDataProviderCpp)')" />
+      <_XamlGen Include="$(IntDir)XamlTypeInfo.Impl.g.cpp"        Condition="Exists('$(IntDir)XamlTypeInfo.Impl.g.cpp')" />
+      <_XamlGen Include="$(IntDir)XamlLibMetadataProvider.g.cpp"  Condition="Exists('$(IntDir)XamlLibMetadataProvider.g.cpp')" />
+      <!-- 先清掉可能已存在的同名条目。Remove 会连带把官方目标挂上来的
+           CompilerIteration=XamlGenerated 一起清掉（Remove + 重新 Include
+           得到的是全新条目，只带我们自己的元数据），这正是要的效果。 -->
+      <ClCompile Remove="@(_XamlGen)" />
+      <_XamlGenDistinct Include="@(_XamlGen)" Distinct="true" />
+    </ItemGroup>
+    <ItemGroup>
+      <ClCompile Include="@(_XamlGenDistinct)">
+        <!-- 生成代码自带 #include "pch.h"，但走 /Yu 会让 MSVC 的 PCH
+             状态机在这些 TU 上给出 C1010「未终止的包含」。
+             另外 directxmath.h 会触发 C5260「未引用的 inline 函数被丢弃」，
+             配合 /WX 会变成 C2220 直接失败。/WX 只对**手写**代码保持严格。 -->
+        <PrecompiledHeader>NotUsing</PrecompiledHeader>
+        <TreatWarningAsError>false</TreatWarningAsError>
+      </ClCompile>
+    </ItemGroup>
+  </Target>
+
+  <!--
+    第二处断链：包把 WinUI 运行时 DLL 放在 runtimes-framework\win-<arch>\native\，
+    而 Microsoft.WinUI.References.targets 里的 _WinUIDllDir 指向
+    runtimes\win10-<arch>\native\（实测该目录不存在）。
+    这里覆盖成真实布局。注意 WinUI 包版本随元包传递，用通配取第一个匹配目录。
+  -->
+  <PropertyGroup>
+    <!-- 版本 2.3.9 由 Microsoft.WindowsAppSDK 2.5.1 传递固定；
+         升级元包时这里要同步（可在 obj\*.nuget.g.targets 里查实际被引用的版本）。 -->
+    <_WinUIDllDir>$(NuGetPackageRoot)microsoft.windowsappsdk.winui\2.3.9\runtimes-framework\win-x64\native\</_WinUIDllDir>
+  </PropertyGroup>
+
+  <!--
+    自包含发布瘦身：剔掉本工程根本不用的 AppSDK 子组件。
+
+    元包会传递引入 AI / ML / Search，可能把 onnxruntime.dll、DirectML.dll
+    拖进输出目录。未排除时实测输出 294 个文件 / 115.9 MB，其中纯属白背的有：
+        onnxruntime.dll   20.66 MB  ┐ Microsoft.Windows.AI.MachineLearning 包
+        DirectML.dll      17.83 MB  ┘ 本工程零引用
+        Microsoft.Windows.AI.*.dll 3.9 MB  AI 组件，零引用
+        Microsoft.Windows.Search.dll 3.31 MB Search 组件，零引用
+        Microsoft.Windows.Widgets.dll 2.36 MB Widgets，零引用
+        WebView2 Core      0.76 MB  官方 target 自己就注明"本工程根本不用"
+        PerceptiveStreaming / NPUDetect / Workloads / SemanticIndex 约 2.7 MB
+    剔除后约 67 MB / 200 个文件。
+
+    ⚠ 为什么用构建后 Delete 而不是官方那个 MicrosoftWindowsAppSDKFilesExcluded
+      扩展点 —— **试过，不生效**（实测 item 求值正确、build 后文件仍在）：
+      自包含产物有**两条**互不相干的进目录通道，item 级排除只挡得住一条：
+      ① AppSDK 官方 SelfContained.targets 的
+        AddMicrosoftWindowsAppSDKPayloadFilesFromComponents
+      ② NuGet 的 ResolveNuGetPackageAssets → ReferenceCopyLocalPaths
+        → _CopyFilesMarkedCopyLocal（RAR 自己解析的传递依赖）
+      onnxruntime.dll / DirectML.dll 根本不在 runtimes-framework\win-x64\ 下，
+      它们在 microsoft.windows.ai.machinelearning\runtimes\win-x64\native\，
+      只走 ②。item 级排除只对 ① 里的 MicrosoftWindowsAppSDKFiles 生效。
+      同一个 DLL 可能同时被两条通道投放，删一次不够。
+
+      构建后按文件名 Delete 不依赖通道，且只认磁盘上真实存在的路径 ——
+      这正是这个问题的判据：**要删的是产物，不是意图**。
+
+    安全前提：这些组件本工程一行代码都没引用。
+  -->
+  <Target Name="TrimSelfContainedPayload" AfterTargets="Build"
+          Condition="'$(WindowsAppSDKSelfContained)'=='true'">
+    <ItemGroup>
+      <_TrimPayload Include="$(OutDir)onnxruntime.dll" />
+      <_TrimPayload Include="$(OutDir)DirectML.dll" />
+      <_TrimPayload Include="$(OutDir)NPUDetect.dll" />
+      <_TrimPayload Include="$(OutDir)PerceptiveStreaming.dll" />
+      <_TrimPayload Include="$(OutDir)RestartAgent.exe" />
+      <_TrimPayload Include="$(OutDir)workloads*.json" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Windows.Workloads*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Windows.AI.*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Windows.Internal.AI.*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Windows.SemanticSearch*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Windows.Internal.Semantic*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Windows.Search*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Windows.Widgets*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Asg.*" />
+      <_TrimPayload Include="$(OutDir)Microsoft.Web.WebView2.*" />
+    </ItemGroup>
+    <Delete Files="@(_TrimPayload)" />
+    <Message Importance="High" Text="[Trim] 自包含瘦身：删除 $(_TrimPayload->Count()) 项" />
+  </Target>
+
+  <!--
+    部署瘦身：**仅框架依赖模式**下，不把 Windows App Runtime 的 DLL/PRI 副本
+    拷进输出目录（自包含模式下这些副本正是运行时要用的，绝不能删）。
+
+    挂点选 AfterTargets="ResolveAssemblyReferences"：此时 RAR 已经算完
+    ReferenceCopyLocalPaths，但 _CopyFilesMarkedCopyLocal 还没执行，
+    是唯一既能看见完整列表、又能阻止拷贝的时机。
+    用「先收进临时项再 Remove」的写法，是因为 Remove 的条件里直接写
+    %(ReferenceCopyLocalPaths.Identity) 在 MSBuild 里逐项求值并不可靠。
+  -->
+  <Target Name="TrimFrameworkDependentCopyLocal"
+          AfterTargets="ResolveAssemblyReferences"
+          Condition="'$(WindowsAppSDKSelfContained)'!='true'">
+    <ItemGroup>
+      <_FrameworkCopyLocalPath Include="@(ReferenceCopyLocalPaths)"
+        Condition="$([System.String]::Copy('%(ReferenceCopyLocalPaths.Identity)').StartsWith('$(_WinUIDllDir)'))
+                   or $([System.String]::Copy('%(ReferenceCopyLocalPaths.Identity)').StartsWith('$(NuGetPackageRoot)microsoft.web.webview2\'))" />
+      <ReferenceCopyLocalPaths Remove="@(_FrameworkCopyLocalPath)" />
+    </ItemGroup>
+    <Message Importance="Normal" Text="[Trim] 从输出目录剔除框架副本 $(_FrameworkCopyLocalPath->Count()) 项" />
+  </Target>
+
+
+</Project>

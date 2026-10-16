@@ -9,6 +9,7 @@ LingwuLab 的 Windows 系统工具集。
 | 目录 | 说明 | 版本 | 下载 |
 |---|---|---|---|
 | [lingwu-sysmon](lingwu-sysmon/) | Windows 系统监视器（进程 / CPU / 内存 / 网络聚合），C++/WinRT + WinUI 3 | 0.0.1 | [LingwuSysmon-0.0.1-win64.exe](https://github.com/ycowner/lingwulab-windows-tools/releases/download/lingwu-sysmon-v0.0.1/LingwuSysmon-0.0.1-win64.exe) |
+| [lingwu-service-manager](lingwu-service-manager/) | 服务管理器（列表 / 搜索 / 筛选 / 启停 / 启动类型 / 创建 / 删除），C++/WinRT + WinUI 3 | 0.0.1 | 见该目录 [README](lingwu-service-manager/README.md) |
 
 ## 构建
 
@@ -39,7 +40,8 @@ git push origin lingwu-sysmon-v0.0.1
 推送 tag 即触发 `.github/workflows/release-sysmon.yml`：在 `windows-2025`
 runner 上重新构建、打包成单文件 SFX，然后创建 GitHub Release 并挂上
 `LingwuSysmon-<版本>-win64.exe`。不需要手动传任何密钥，用的是
-`GITHUB_TOKEN`。
+`GITHUB_TOKEN`。`lingwu-service-manager-vX.Y.Z` 走
+`.github/workflows/release-svcmgr.yml`，两者互不干扰。
 
 用 `-` 而不是 `/` 分隔是有意的：tag 里带斜杠虽然更常见，但下载链接里的
 斜杠必须编码成 `%2F`，任何脚本化引用都会踩坑。

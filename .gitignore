@@ -1,7 +1,25 @@
-# ---- 构建产物（由 lingwu-sysmon\build.bat 重新生成） ----
+# ---- 构建产物（每个工具各自重新生成，不进版本库） ----
+#
+# 按目录逐条列，不用 **/build/ 这类通配：一个工具的源码或文档里将来出现
+# 叫 build / dist 的子目录是完全可能的，全局通配会在那时候静默吞掉它。
+#
+# build/   —— IntDir=$(ProjectDir)build\obj\$(Configuration)，还兼当
+#             packaging\make-sfx.ps1 的暂存区（build\pack\payload.bin 约 60 MB）
+# dist/    —— OutDir=$(ProjectDir)dist\$(Configuration)，以及打包输出 dist\package
+# obj/     —— NuGet 还原产物（project.assets.json 等）
 /lingwu-sysmon/build/
 /lingwu-sysmon/dist/
 /lingwu-sysmon/obj/
+/lingwu-service-manager/build/
+/lingwu-service-manager/dist/
+/lingwu-service-manager/obj/
+
+# ---- 构建/验收留下的日志与临时脚本 ----
+#
+# build-log.txt 是手工重定向出来的，build-errors.txt 与 build\*.ps1 是排查时
+# 写的一次性工具。它们不进版本库：真正的常驻验收脚本在 tools\ 下。
+/lingwu-service-manager/build-log.txt
+/lingwu-service-manager/build-errors.txt
 
 # ---- Visual Studio 本机状态 ----
 .vs/

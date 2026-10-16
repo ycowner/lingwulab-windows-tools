@@ -1,0 +1,83 @@
+// ServiceRow.idl - C++/WinRT component declaration.
+//
+// IMPORTANT: this file MUST stay pure ASCII.
+// MIDL reads source files using the system ANSI code page (936 on zh-CN),
+// not UTF-8. Chinese comments here raise C4819, and this project builds with
+// /WX. Same class of trap as build.bat and the .ps1 scripts.
+//
+// Why ServiceRow is a runtimeclass at all:
+//   The obvious thing is a plain C++ struct + x:Bind, but x:Bind only works
+//   when the XAML compiler can resolve the members at compile time, and it
+//   resolves them against types found in **metadata**. A plain struct is in
+//   no winmd, so the build stops with
+//     WMC0909  Cannot resolve DataType local:ServiceRow
+//     WMC1111  DataTemplates containing x:Bind need a DataType
+//   Declaring it here puts it into our own winmd.
+//
+// IMPORTANT -- why INotifyPropertyChanged is NOT listed here:
+//
+//   The row object has to notify XAML when its values change, and that is
+//   implemented in C++ by passing the interface as an extra template argument
+//   to ServiceRowT:
+//
+//     struct ServiceRow
+//         : ServiceRowT<ServiceRow, Microsoft.UI.Xaml.Data.INotifyPropertyChanged>
+//
+//   cppwinrt emits ServiceRowT as a template taking extra interfaces, and
+//   ServiceRow_base<D, I...> : implements<D, LingwuServiceManager::ServiceRow, I...>,
+//   so the extra interface lands in the QI table with its real IID and XAML
+//   finds it at runtime by QueryInterface. The winmd does not need to list it.
+//
+//   Putting it in this file does NOT work:
+//     import "Windows.Foundation.idl";
+//         -> MIDL2003 redefinition cascade over the whole SDK IDL chain
+//
+//     runtimeclass X : Microsoft.UI.Xaml.Data.INotifyPropertyChanged
+//         -> MIDL2009 undefined symbol: the WinUI NuGet package ships
+//            Microsoft.UI.Xaml.Data.winmd but not an importable idl for it.
+//
+//   For reference, [bindable] was tried on lingwu-sysmon's ProcessRow and is
+//   **silently ignored** by this MIDL/SDK combination -- it builds clean, and
+//   the emitted winmd contains no BindableAttribute. Don't retry it here.
+//
+//   The working combination is therefore the classic {Binding} markup
+//   extension plus a hand-written ICustomPropertyProvider / ICustomProperty
+//   implementation. See ServiceRow.h.
+
+namespace LingwuServiceManager
+{
+    [default_interface]
+    runtimeclass ServiceRow
+    {
+        // Activatable, so the factory_implementation in ServiceRow.h is
+        // required even though MainWindow only builds rows with make<>().
+        ServiceRow();
+
+        // The five displayed columns. Every value is pre-formatted when the
+        // row is updated; nothing is formatted inside the XAML tree.
+        String Name            { get; };
+        String DisplayNameText { get; };
+        String StateText       { get; };
+        String StartTypeText   { get; };
+        String PidText         { get; };
+
+        // Logical values used by sorting and filtering. These are **not**
+        // bound in XAML and must not raise PropertyChanged -- doing so costs
+        // one cross-ABI event dispatch per row per frame that matches nothing.
+        String Key         { get; };
+        UInt32 StateValue  { get; };
+        UInt32 StartTypeValue { get; };
+
+        // In-place update. This is the whole point of the row object living
+        // across frames: MainWindow calls Update() on every refresh, the
+        // object raises PropertyChanged for the fields that actually changed,
+        // and the ListView containers are never torn down and re-created.
+        void Update(String name,
+                    String displayName,
+                    String stateText,
+                    String startTypeText,
+                    String pidText,
+                    UInt32 stateValue,
+                    UInt32 startTypeValue);
+    }
+}

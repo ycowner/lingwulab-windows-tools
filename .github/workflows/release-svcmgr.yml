@@ -1,0 +1,278 @@
+name: release-svcmgr
+
+# Per-tool release. Each tool in this repo owns a tag namespace of the form
+# <tool>-vX.Y.Z and its own workflow; pushing one tool's tag must never touch
+# another tool's releases. Releases themselves are repo-wide by nature (GitHub
+# keys them on a flat tag namespace, not on a directory), so the isolation here
+# is entirely a convention + workflow-trigger convention.
+on:
+  push:
+    tags:
+      - 'lingwu-service-manager-v*'
+
+permissions:
+  contents: write
+
+# One release per tag; a re-push of the same tag should serialize, not race.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # windows-2025 is the VS 2026 image (GA since 2026-05; windows-latest moved
+    # to it on 2026-06-08). It ships Windows 11 SDK 10.0.26100, which is what
+    # this project needs. Do not downgrade to windows-2022 -- VCProjectVersion
+    # is 18.0 and requires the v144 toolchain.
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the changelog below is generated from git log, and the
+          # previous tag of THIS tool has to be discoverable.
+          fetch-depth: 0
+
+      # ---- version -------------------------------------------------------
+      # The tag is the single authority for a release. Everything downstream
+      # (package name, VERSIONINFO block, release title) is derived from it, so
+      # a published artifact can never disagree with the tag it sits under.
+      - name: Derive version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^lingwu-service-manager-v(\d+\.\d+\.\d+)$') {
+            throw "Tag '$tag' does not match the required form lingwu-service-manager-vX.Y.Z."
+          }
+          $v = $Matches[1]
+          "version=$v"  >> $env:GITHUB_OUTPUT
+          "tag=$tag"    >> $env:GITHUB_OUTPUT
+          Write-Host "Release version: $v (tag $tag)"
+
+      # ---- toolchain -----------------------------------------------------
+      # Pin VS 2026 explicitly. The runner image carries VS 2022 alongside it for
+      # compatibility, and build.bat's vswhere probe takes the highest installed
+      # VS -- which is not a guarantee we want to hang a release on.
+      - name: Locate VS 2026 toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+                  -latest -products * `
+                  -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                  -version '[18.0,19.0)' `
+                  -property installationPath
+          if (-not $vs) {
+            throw "No Visual Studio 2026 (18.x) with the C++ toolset on this runner."
+          }
+          if (-not (Test-Path (Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'))) {
+            throw "vcvars64.bat not found under '$vs'."
+          }
+          "LINGWU_VSPATH=$vs" >> $env:GITHUB_ENV
+          Write-Host "Using VS at $vs"
+
+          # Diagnostics only: proves at build time which SDKs the image really
+          # has, which is what WindowsTargetPlatformVersion resolves against.
+          Write-Host "`nInstalled Windows SDKs:"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Directory |
+            ForEach-Object { Write-Host "  $($_.Name)" }
+
+      # ---- build ---------------------------------------------------------
+      # WindowsTargetPlatformVersion=10.0 means "newest SDK present on this
+      # machine". The vcxproj pins 10.0.26100.0, but that is a full four-part
+      # version and MSBuild matches the Include directory name exactly -- the
+      # image carries a patched 10.0.26100.x, so the pinned value would fail to
+      # resolve. WindowsTargetPlatformMinVersion (10.0.17763.0) is the runtime
+      # API floor and is deliberately left untouched: that one is a project
+      # invariant, not a toolchain lookup.
+      - name: Build LingwuServiceManager.exe
+        working-directory: lingwu-service-manager
+        shell: cmd
+        run: build.bat -p:WindowsTargetPlatformVersion=10.0
+
+      - name: Verify the rebuilt exe is actually new
+        shell: pwsh
+        working-directory: lingwu-service-manager
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = '.\dist\Release\LingwuServiceManager.exe'
+          if (-not (Test-Path $exe)) { throw "Build reported success but $exe is missing." }
+          Write-Host ("LingwuServiceManager.exe = {0:N0} bytes, built {1}" -f `
+                      (Get-Item $exe).Length, (Get-Item $exe).LastWriteTime)
+
+      # ---- package -------------------------------------------------------
+      - name: Package self-extracting exe
+        working-directory: lingwu-service-manager
+        shell: pwsh
+        run: pwsh -NoProfile -File .\packaging\make-sfx.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      - name: Collect artifact
+        id: asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'lingwu-service-manager\dist\package\LingwuServiceManager-${{ steps.ver.outputs.version }}-win64.exe'
+          if (-not (Test-Path $exe)) { throw "Expected package $exe was not produced." }
+          $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host ("Asset: {0} ({1} MB)" -f $exe, $mb)
+          # Must be key=value. GITHUB_OUTPUT parses each line as `name=value`
+          # and fails the step outright ("Invalid format '<value>'") on a bare
+          # value -- it does not treat it as an unnamed output.
+          "asset=$(Resolve-Path $exe | ForEach-Object { $_.Path })" >> $env:GITHUB_OUTPUT
+
+      # ---- changelog -----------------------------------------------------
+      # Generated from this tool's path only, between this tool's own previous
+      # tag and this one. `gh release create --generate-notes` would diff
+      # against the previous release of ANY tool in the repo, so with more than
+      # one tool shipping it would list another tool's commits under this
+      # release's name.
+      - name: Generate release notes
+        id: notes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag    = '${{ steps.ver.outputs.tag }}'
+          $ver    = '${{ steps.ver.outputs.version }}'
+          $repo   = $env:GITHUB_REPOSITORY
+
+          $all  = @(git tag --list 'lingwu-service-manager-v*' --sort=-v:refname)
+          $prev = $all | Where-Object { $_ -ne $tag } | Select-Object -First 1
+
+          if ($prev) {
+            $range = "$prev..$tag"
+            $link  = "https://github.com/$repo/compare/$prev...$tag"
+            Write-Host "Changelog range: $range"
+          } else {
+            $range = $tag
+            $link  = "https://github.com/$repo/commits/$tag"
+            Write-Host "No previous lingwu-service-manager tag; using full history."
+          }
+
+          $subjects = @(git log --no-merges --pretty=format:'%s' $range -- lingwu-service-manager)
+          $body = if ($subjects) {
+              ($subjects | ForEach-Object { "- $_" }) -join "`n"
+          } else {
+              '_本次 tag 没有面向用户的提交记录。_'
+          }
+
+          # Release notes are Chinese by default. Keep only what must stay
+          # verbatim in English: the product name, version numbers, commit
+          # subjects (reproduced as written, not translated), file names and URLs.
+          $notes = @"
+          ## Lingwu Service Manager v$ver
+
+          Windows x64 单文件免安装版，解压即用。
+
+          $body
+
+          完整变更记录：$link
+          "@
+
+          $path = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          [System.IO.File]::WriteAllText($path, $notes, (New-Object System.Text.UTF8Encoding $false))
+          Write-Host "`n--- notes ---`n$notes"
+
+      # ---- publish -------------------------------------------------------
+      # Uses the gh CLI that ships with the runner rather than a third-party
+      # action: fewer moving parts between the tag and the published binary.
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag   = '${{ steps.ver.outputs.tag }}'
+          $ver   = '${{ steps.ver.outputs.version }}'
+          # Must name the output key. `${{ steps.asset.outputs }}` interpolates
+          # the whole outputs *map*, which GitHub renders as the literal string
+          # "Object" -- gh then fails looking for a file of that name.
+          $asset = '${{ steps.asset.outputs.asset }}'
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+
+          if (-not (Test-Path $asset)) {
+              throw "Asset path from the previous step does not exist: '$asset' (was steps.asset.outputs the literal string 'Object'?)"
+          }
+
+          # Idempotent: a re-run of the same tag replaces its release. Delete
+          # through the API so the tag itself is never touched.
+          $repo = $env:GITHUB_REPOSITORY
+          $id = gh api "repos/$repo/releases/tags/$tag" --jq '.id' 2>$null
+          if ($LASTEXITCODE -eq 0 -and $id) {
+            Write-Host "Release $tag already exists (id $id); replacing it."
+            gh api -X DELETE "repos/$repo/releases/$id" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Failed to delete existing release $tag." }
+          }
+
+          gh release create $tag $asset `
+            --repo $repo `
+            --title "Lingwu Service Manager v$ver" `
+            --notes-file $notes `
+            --latest
+          # gh exiting non-zero does NOT fail a PowerShell step on its own, so
+          # check it here. Without this the step printed "Published" and then
+          # died on whatever the last command happened to return.
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed (exit $LASTEXITCODE)." }
+
+          Write-Host "`nPublished: https://github.com/$repo/releases/tag/$tag"
+
+      # ---- post-check ----------------------------------------------------
+      # An actual gate, not a log line: if the release exists but the binary
+      # did not land on it, that is a failed release and the run must say so.
+      # Note `gh release view` has no isLatest field (that is a `release list`
+      # field) -- asking for it makes gh exit non-zero with
+      # "Unknown JSON field".
+      - name: Confirm the asset is on the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = $env:GITHUB_REPOSITORY
+          $tag  = '${{ steps.ver.outputs.tag }}'
+          $ver  = '${{ steps.ver.outputs.version }}'
+          $want = "LingwuServiceManager-$ver-win64.exe"
+
+          $raw = gh release view $tag --repo $repo --json tagName,name,isDraft,isPrerelease,assets,url
+          if ($LASTEXITCODE -ne 0) { throw "gh release view failed for $tag." }
+          $rel = $raw | ConvertFrom-Json
+
+          $names = @($rel.assets | ForEach-Object { $_.name })
+          Write-Host ("release : {0}" -f $rel.tagName)
+          Write-Host ("title   : {0}" -f $rel.name)
+          Write-Host ("draft   : {0}   prerelease: {1}" -f $rel.isDraft, $rel.isPrerelease)
+          Write-Host ("url     : {0}" -f $rel.url)
+          foreach ($a in $rel.assets) {
+              Write-Host ("  asset : {0}  {1:N1} MB" -f $a.name, ($a.size / 1MB))
+          }
+
+          if ($names -notcontains $want) {
+              throw "Release $tag was created but '$want' is not on it. Assets: $($names -join ', ')"
+          }
+          if ($rel.isDraft -or $rel.isPrerelease) {
+              throw "Release $tag came out as draft=$($rel.isDraft) prerelease=$($rel.isPrerelease); expected a public release."
+          }
+          Write-Host "`nOK: $want is published."
+
+      # ---- advisory only -------------------------------------------------
+      # The in-repo default in make-sfx.ps1 drives LOCAL builds; the tag drives
+      # releases. If they disagree, the released artifact is still correct (the
+      # tag won), but the next local build would produce a differently-named
+      # exe and the README version table would be stale. Warn, never fail: a
+      # bookkeeping mismatch here must not block a correctly-tagged release.
+      - name: Warn if the in-repo version literal is stale
+        if: always()
+        shell: pwsh
+        working-directory: lingwu-service-manager
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = '${{ steps.ver.outputs.version }}'
+          $m = [regex]::Match(
+                  (Get-Content -Raw '.\packaging\make-sfx.ps1'),
+                  "\[string\]`$Version = '([^']+)'")
+          if ($m.Success -and $m.Groups[1].Value -ne $ver) {
+            Write-Warning ("make-sfx.ps1 defaults to version '{0}' but this release is '{1}'. " +
+                           "Local builds will produce {0}; update the literal and the README table." -f `
+                           $m.Groups[1].Value, $ver)
+          }
