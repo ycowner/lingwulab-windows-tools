@@ -275,6 +275,13 @@ MainWindow::MainWindow() {
     platform::ApplyWindowDecorations(hwnd);
 
     // 页面在窗口就绪之后创建。
+    //
+    // 【先记下药丸的默认文字色】
+    // 未选中态不另取主题画刷，而是把 Button 此刻的默认 Foreground 存下来 ——
+    // 那本来就是主题给正文用的颜色（深色主题下是近白，浅色主题下是近黑）。
+    // 必须在任何一次 UpdateNavPills() 之前取，否则取到的就是被改过的颜色。
+    navIdleForeground_ = NavMonitorButton().Foreground();
+
     CreatePages();
     WireEvents();
 
@@ -282,6 +289,23 @@ MainWindow::MainWindow() {
     // 且注册失败只该记日志不该中断启动。
     InitTray();
     LINGWU_TRACE("MainWindow ctor: done");
+}
+
+// ---------------------------------------------------------------- 导航
+void MainWindow::UpdateNavPills() {
+    const bool monitor = (currentModule_ == Module::Monitor);
+
+    // 强调色与反色文字都从 XAML 探针上取（见 XAML 里探针的注释）。
+    const auto accent   = AccentBrushProbe().Background().as<SolidColorBrush>();
+    const auto onAccent = OnAccentBrushProbe().Background().as<SolidColorBrush>();
+    if (!accent || !onAccent) return;
+
+    const auto clear = SolidColorBrush(Microsoft::UI::Colors::Transparent());
+
+    NavMonitorPill().Background(monitor ? accent : clear);
+    NavServicePill().Background(monitor ? clear : accent);
+    NavMonitorButton().Foreground(monitor ? onAccent : navIdleForeground_);
+    NavServiceButton().Foreground(monitor ? navIdleForeground_ : onAccent);
 }
 
 // ---------------------------------------------------------------- 页面
@@ -312,11 +336,14 @@ void MainWindow::ShowModule(Module m) {
     monitorPage_.Visibility(monitor ? Visibility::Visible : Visibility::Collapsed);
     servicePage_.Visibility(monitor ? Visibility::Collapsed : Visibility::Visible);
 
-    // 导航选中态同步。程序化设置也会触发 SelectionChanged，
-    // 所以用 suppressNav_ 挡住，避免「切模块 → 事件 → 再切模块」来回弹。
-    suppressNav_ = true;
-    NavBar().SelectedItem(monitor ? NavMonitorItem() : NavServiceItem());
-    suppressNav_ = false;
+    // 导航药丸的选中态同步。
+    //
+    // 【为什么不需要重入保护】
+    // 早先用 SelectorBar 时，程序化设置 SelectedItem 会再触发一次
+    // SelectionChanged，得靠 suppressNav_ 挡住「切模块 → 事件 → 再切模块」。
+    // 现在药丸的选中态是自己刷颜色（UpdateNavPills），不经过任何会回调的事件，
+    // 所以那面挡板就不需要了。
+    UpdateNavPills();
 
     // 右键菜单的命中测试改指向当前活动页面。
     // 命中测试要用到行高、列表位置、滚动偏移 —— 都是页面自己的布局信息，
@@ -355,17 +382,9 @@ void MainWindow::ApplyBackdrop() {
 
 // ---------------------------------------------------------------- 事件
 void MainWindow::WireEvents() {
-    // 导航切换。SelectorBar 的事件是 SelectionChanged（不是 ItemInvoked）。
-    NavBar().SelectionChanged([this](auto&&, auto&&) {
-        if (suppressNav_) return;
-        const auto item = NavBar().SelectedItem();
-        if (!item) return;
-        if (item == NavServiceItem()) {
-            ShowModule(Module::Service);
-        } else {
-            ShowModule(Module::Monitor);
-        }
-    });
+    // 导航切换。药丸是 Button，Click 是 RoutedEventHandler（委托族可用）。
+    NavMonitorButton().Click([this](auto&&, auto&&) { ShowModule(Module::Monitor); });
+    NavServiceButton().Click([this](auto&&, auto&&) { ShowModule(Module::Service); });
 
     // ---- 对话框互斥闸门 --------------------------------------------------
     // 闸门由外壳创建，两个页面与关闭确认框共用同一把。

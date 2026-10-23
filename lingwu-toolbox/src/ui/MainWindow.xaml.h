@@ -65,6 +65,18 @@ private:
     void ShowModule(Module m);
     Module currentModule_ = Module::Monitor;
 
+    // 药丸导航的选中态。
+    //
+    // 【为什么颜色要现算】
+    // 药丸的填充色必须跟着主题走（深色 / 浅色两套强调色不一样），
+    // 而 ThemeResource 只在 XAML 解析期生效，C++ 侧没有 API 直接取
+    // 「按当前主题解析好的画刷」。所以 XAML 里放了两个 0×0 的隐藏 Border
+    // 探针把画刷解析出来，这里从它们身上读。
+    //
+    // 至于「未选中」态的文字色：不另取主题画刷，而是把 Button 构造完
+    // 之后的默认 Foreground 存下来 —— 那本来就是主题给正文用的那个颜色。
+    void UpdateNavPills();
+
     // ---- 生命周期 ----
     // 把窗口显示出来并拿到前台。托盘左键、菜单「显示主界面」、
     // 以及第二份实例的激活消息都走这里。
@@ -154,10 +166,9 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::CheckBox closeRemember_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::StackPanel closePromptPanel_{ nullptr };
 
-    // 导航切换时的重入保护。
-    // 程序化设置 SelectedItem 也会触发 SelectionChanged，
-    // 不挡住就会「切模块 → 事件 → 再切模块」来回弹。
-    bool suppressNav_ = false;
+    // 导航药丸的默认（未选中）文字色。构造完 Button 之后立刻记下来，
+    // 之后切换模块时用它把未选中的那颗药丸还原回普通文字色。
+    winrt::Microsoft::UI::Xaml::Media::Brush navIdleForeground_{ nullptr };
 
     HWND hwnd_{ nullptr };
 };

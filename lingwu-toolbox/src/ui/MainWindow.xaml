@@ -26,6 +26,31 @@
 
     <Grid x:Name="RootGrid" RowDefinitions="Auto,*">
 
+        <!-- ============================================================
+             主题画刷探针
+
+             【为什么需要它】
+             导航药丸的「选中」态要用强调色填充 + 反色文字。这两个画刷必须
+             **跟着主题走**（深色 / 浅色两套），所以不能用写死的 RGB。
+             而 ThemeResource 只在 XAML 解析期生效，C++ 侧没有 API 能直接
+             拿到「按当前主题解析好的画刷」。
+             于是这里放两个 0×0 的隐藏 Border，让 XAML 把 ThemeResource
+             解析成具体画刷，C++ 再从 Border.Background 读出来用。
+
+             【为什么不写成 ResourceDictionary 里的资源再 Lookup】
+             ResourceDictionary 里只能放「键 → 画刷」的静态映射，而主题画刷
+             本身不是静态资源（它随主题变），没法用别名键取出来；
+             而 SolidColorBrush 又没有可用的 Color 形态 token
+             （AccentFillColorDefault 这个 Color token 在 WinUI 里不存在）。
+             探针是这里唯一既保持主题跟随、又能拿到画刷的干净做法。
+             ============================================================ -->
+        <Border x:Name="AccentBrushProbe"
+                Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
+                Background="{ThemeResource AccentFillColorDefaultBrush}" />
+        <Border x:Name="OnAccentBrushProbe"
+                Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
+                Background="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+
         <!-- ============================ 标题栏（可拖拽） ============================ -->
         <Grid x:Name="TitleBar" Grid.Row="0" Height="48" Background="Transparent">
             <Grid ColumnDefinitions="Auto,*,Auto">
@@ -49,16 +74,40 @@
                                Style="{ThemeResource BodyStrongTextBlockStyle}" />
                 </StackPanel>
 
-                <!-- 模块导航。用 SelectorBar（分段控件）：WinUI 自带滑动指示器，
-                     不需要自绘模板，也不必为「选中态」写任何额外样式代码。
-                     两个页面都是常驻的，切换只改 Visibility，不重建内容。 -->
-                <SelectorBar x:Name="NavBar"
-                             Grid.Column="1"
-                             HorizontalAlignment="Center"
-                             VerticalAlignment="Center">
-                    <SelectorBarItem x:Name="NavMonitorItem" Text="性能监视" IsSelected="True" />
-                    <SelectorBarItem x:Name="NavServiceItem" Text="服务管理" />
-                </SelectorBar>
+                <!-- 模块导航：药丸分段。
+                     选中项整块填充强调色、文字反白；未选中项透明底 + 普通文字。
+                     位置在标题栏正中。
+
+                     【为什么是 Border 包 Button，而不是现成的 SelectorBar】
+                     SelectorBar 的选中态是一条小竖条下划线（WinUI 主题里
+                     SelectorBarItemPill 的 Height 只有 3），不是整块填充。
+                     用户 2026-10-23 在四选一对照图里选的就是「药丸」这一列，
+                     所以这里自绘：Border 负责圆角与填充，Button 负责点击。
+
+                     【为什么 Button 的 Background 是 Transparent】
+                     填充画在 Border 上；Button 保持透明才不会盖住 Border 的底色。
+                     它的 Padding 决定药丸里文字左右的留白。 -->
+                <StackPanel x:Name="NavPills"
+                            Grid.Column="1"
+                            Orientation="Horizontal"
+                            Spacing="4"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center">
+                    <Border x:Name="NavMonitorPill" CornerRadius="14" Background="Transparent">
+                        <Button x:Name="NavMonitorButton"
+                                Content="性能监视"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Padding="18,5,18,5" />
+                    </Border>
+                    <Border x:Name="NavServicePill" CornerRadius="14" Background="Transparent">
+                        <Button x:Name="NavServiceButton"
+                                Content="服务管理"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Padding="18,5,18,5" />
+                    </Border>
+                </StackPanel>
 
                 <!-- 右侧留空：系统按钮（最小化/最大化/关闭）压在这一带。 -->
                 <Grid Grid.Column="2" Width="140" />
