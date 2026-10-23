@@ -48,8 +48,8 @@ bool HasSwitch(const wchar_t* name) {
 bool ShouldStartSilent() {
     const auto mode = core::ParseStartupMode();
     if (mode != core::STARTUP_AUTOSTART) return false;
-    // --show 是提权重启路径（RelaunchElevated）传的，强制显示：
-    // 用户刚点了「提权重启」，不弹界面等于没有任何反馈。
+    // --show 强制显示主界面：即使是被自启拉起来的（--autostart）也要显示。
+    // 用户可以手动用这个开关临时推翻「开机静默、只进托盘」的行为。
     if (HasSwitch(L"--show")) return false;
     return true;
 }

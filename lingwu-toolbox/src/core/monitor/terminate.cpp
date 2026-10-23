@@ -1,7 +1,9 @@
 // terminate.cpp —— 结束进程的三段式实现
 //
 // 三段式：跳过受保护 / 自身 → WM_CLOSE 优雅关闭 → 轮询 → TerminateProcess 强杀。
-// 权限不足（ERROR_ACCESS_DENIED）时返回 KILL_NEEDS_ADMIN，由 UI 决定是否走 runas 提权重启。
+// 打不开目标进程（ERROR_ACCESS_DENIED）时返回 KILL_ACCESS_DENIED ——
+// 报的是事实，措辞由 UI 决定：合并成工具箱后程序恒定以管理员身份运行，
+// 这个结果通常意味着「进程受系统保护」，而不是「缺权限、提权就能解决」。
 #include "pch.h"
 
 #include "terminate.h"
@@ -34,7 +36,7 @@ void PostCloseToProcess(DWORD pid) {
 KillResult TerminateAppPids(const DWORD* pids, DWORD count, bool gracefulFirst,
                             DWORD graceMs, int* killedCount) {
     int killed = 0;
-    bool needAdmin = false;
+    bool accessDenied = false;
     const DWORD selfPid = GetCurrentProcessId();
 
     std::vector<DWORD> pending;
@@ -65,7 +67,7 @@ KillResult TerminateAppPids(const DWORD* pids, DWORD count, bool gracefulFirst,
     for (DWORD pid : pending) {
         HANDLE h = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (!h) {
-            if (GetLastError() == ERROR_ACCESS_DENIED) needAdmin = true;
+            if (GetLastError() == ERROR_ACCESS_DENIED) accessDenied = true;
             continue;
         }
         if (WaitForSingleObject(h, 0) == WAIT_OBJECT_0) { CloseHandle(h); killed++; continue; }
@@ -74,7 +76,7 @@ KillResult TerminateAppPids(const DWORD* pids, DWORD count, bool gracefulFirst,
     }
 
     if (killedCount) *killedCount = killed;
-    if (needAdmin) return KILL_NEEDS_ADMIN;
+    if (accessDenied) return KILL_ACCESS_DENIED;
     return (killed > 0) ? KILL_OK : KILL_FAILED;
 }
 

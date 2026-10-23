@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include <tlhelp32.h>
+
 namespace lingwu {
 namespace core {
 namespace monitor {
@@ -97,6 +99,31 @@ bool PidsConsistent(const Snapshot& s) {
 }
 
 // 聚合口径下，同一行的所有 pid 必须来自同名进程。
+// 找一个「系统保护进程」的 pid 当候选。
+//
+// 【这里只负责「找候选」，不负责判定受不受保护】
+// 判定必须用**与 TerminateAppPids 完全相同的访问掩码**去探 OpenProcess，
+// 只有那样才能推出「探失败 ⇒ TerminateAppPids 里那一次也必然打不开」。
+// 判定逻辑放在调用方，理由见那里的注释。
+DWORD FindProtectedProcessCandidate() {
+    const wchar_t* kNames[] = { L"wininit.exe", L"csrss.exe", L"Registry" };
+    HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    DWORD found = 0;
+    if (::Process32FirstW(snap, &pe)) {
+        do {
+            for (const wchar_t* name : kNames) {
+                if (_wcsicmp(pe.szExeFile, name) == 0) { found = pe.th32ProcessID; break; }
+            }
+            if (found) break;
+        } while (::Process32NextW(snap, &pe));
+    }
+    ::CloseHandle(snap);
+    return found;
+}
+
 bool AggregationHolds(const Snapshot& s) {
     // 建 pid -> name 映射（pid 复用由 createTime 兜底，但本进程生命周期内足够）
     for (const AppInfo& a : s.apps) {
@@ -252,6 +279,53 @@ int RunSelfTest(int ticks) {
         Line(W(L"  pid {0, 4, %u(自身)} → result=%d killed=%d", self, r, killed));
         Check(killed == 0, L"pid 0 / 4 / 自身全部被跳过（killed=0）");
         Check(r == KILL_FAILED, L"无可杀进程时返回 KILL_FAILED");
+    }
+
+    // ---------------- 「访问被拒」分支（结束进程） ----------------
+    //
+    // 【为什么单独测这一条】
+    // 这条分支以前没有覆盖过（合并前叫 KILL_NEEDS_ADMIN）。它现在决定的是
+    // 「结束任务」碰到受保护进程时弹什么文案 —— 合并成工具箱后整个程序恒定
+    // 以管理员身份运行，那条路径从「提权就能解决」变成了「进程受系统保护」，
+    // 语义变了，值得钉住。
+    //
+    // 【安全闸门 —— 为什么不能直接拿候选 pid 去调 TerminateAppPids】
+    // TerminateAppPids 内部是「OpenProcess 成功就 TerminateProcess」。
+    // 万一挑到的进程在**这台机器上不受保护**，那一调就是真的把它杀了 ——
+    // 挑到 csrss / wininit 的话就是蓝屏。
+    // 所以顺序必须是：先用**完全相同的访问掩码**自己探一次 OpenProcess。
+    //   · 探到「打不开且 ERROR_ACCESS_DENIED」→ 证明它受保护，
+    //     TerminateAppPids 里那一次 OpenProcess 必然同样失败，
+    //     不可能杀到它 → 这时调用是安全的；
+    //   · 探到「能打开」→ 说明本机它不受保护，**立即放弃**，绝不调用。
+    // 另外 gracefulFirst 传 false：不走「给顶层窗口发 WM_CLOSE」那段，
+    // 整个探针对系统没有任何副作用。
+    Line(L"");
+    Line(L"[3b] 结束进程：受保护进程 → KILL_ACCESS_DENIED");
+    {
+        const DWORD candidate = FindProtectedProcessCandidate();
+        if (candidate == 0) {
+            Line(L"  （本机没找到系统保护进程，跳过这一项 —— 不计失败）");
+        } else {
+            // 安全闸门：与 TerminateAppPids 用**同一个掩码**探一次。
+            HANDLE probe = ::OpenProcess(
+                PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, candidate);
+            const DWORD probeErr = probe ? ERROR_SUCCESS : ::GetLastError();
+            if (probe) {
+                ::CloseHandle(probe);
+                Line(W(L"  pid %u 在本机可打开（不受保护）→ 放弃这一项，绝不调用 TerminateAppPids",
+                        candidate));
+            } else if (probeErr != ERROR_ACCESS_DENIED) {
+                Line(W(L"  pid %u 打不开但原因不是 ERROR_ACCESS_DENIED（%lu）→ 放弃这一项",
+                        candidate, (unsigned long)probeErr));
+            } else {
+                int killed = -1;
+                const KillResult r = TerminateAppPids(&candidate, 1, false, 0, &killed);
+                Line(W(L"  pid %u（受保护）→ result=%d killed=%d", candidate, r, killed));
+                Check(r == KILL_ACCESS_DENIED, L"打不开的进程返回 KILL_ACCESS_DENIED");
+                Check(killed == 0, L"打不开的进程一个都没杀掉");
+            }
+        }
     }
 
     // ---------------- 采样 ----------------

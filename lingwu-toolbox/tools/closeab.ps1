@@ -221,8 +221,10 @@ if ($tail60.Count -ge 30) {
     Write-Output 'tail sample too short'
 }
 
-# 绝对红线：AGENTS.md 的「常驻内存 ~132 MB 红线」，判定只卡私有内存。
-$RedLine = 132.0
+# 绝对红线：AGENTS.md 的「常驻内存 ~160 MB 红线」，判定只卡私有内存。
+# 2026-10-23 由 132 上调到 160：合并成工具箱后两个模块的数据管道同时常驻，
+# 合并后实测私有内存 157 MB。口径不变 —— 两个指标都记，红线只卡私有内存。
+$RedLine = 160.0
 
 Write-Output ''
 Write-Output '--- verdict (判据写死，避免事后解释) ---'

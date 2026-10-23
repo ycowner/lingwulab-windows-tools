@@ -10,7 +10,15 @@ namespace monitor {
 // 进程结束结果
 enum KillResult {
     KILL_OK,
-    KILL_NEEDS_ADMIN,
+    // 有进程**打不开**（OpenProcess 返回 ERROR_ACCESS_DENIED）。
+    //
+    // 【为什么不再叫 KILL_NEEDS_ADMIN】
+    // 合并成工具箱后整个程序恒定以管理员身份运行（manifest 声明
+    // requireAdministrator），于是这个结果**不再意味着「缺权限、提权就能解决」** ——
+    // 管理员也打不开的进程是系统保护进程（PPL / 关键进程）。
+    // 所以这里报事实（访问被拒），由 UI 决定怎么措辞，
+    // 绝不在这条路径上再提供「以管理员身份重启」这种无效入口。
+    KILL_ACCESS_DENIED,
     KILL_FAILED,
 };
 

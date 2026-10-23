@@ -24,7 +24,6 @@
 // 它随 WinUI 包的 include 目录一起分发，是官方文档里取 HWND 的标准做法。
 #include <microsoft.ui.xaml.window.h>
 #include <commctrl.h>
-#include <shellapi.h>
 #include <windowsx.h>
 #include <cwctype>
 #include <thread>
@@ -82,23 +81,7 @@ constexpr double kRowHeight = 32.0;
 // winrt::make_weak 用不了），所以唯一安全的做法是一个 this 都不碰：
 // 需要的一切（DispatcherQueue / XamlRoot / 对话框 / 数据 / 存活标志）
 // 都按值搬走。WinRT 对象是引用计数的，按值捕获会延长生命周期、不会悬垂。
-void RelaunchElevated() {
-    wchar_t exe[MAX_PATH] = { 0 };
-    ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    SHELLEXECUTEINFOW sei{};
-    sei.cbSize       = sizeof(sei);
-    sei.fMask        = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
-    sei.lpVerb       = L"runas";
-    sei.lpFile       = exe;
-    sei.lpParameters = L"--show";
-    sei.nShow        = SW_SHOWNORMAL;
-    if (!::ShellExecuteExW(&sei)) {
-        ::MessageBoxW(nullptr, L"提权启动被取消或被系统拒绝。", L"需要管理员权限",
-                      MB_OK | MB_ICONWARNING | MB_TOPMOST);
-    } else if (sei.hProcess) {
-        ::CloseHandle(sei.hProcess);
-    }
-}
+//
 // 把结果写进常驻的 notice_ 对话框（不 Show —— 由调用方在 UI 线程上 Show）。
 void FillNotice(ContentDialog const& notice, XamlRoot const& root,
                 core::KillResult r, int killed, const std::wstring& name) {
@@ -107,18 +90,26 @@ void FillNotice(ContentDialog const& notice, XamlRoot const& root,
     // 投影头 Microsoft.UI.Xaml.Controls.h:4383 就是
     //     consume_..._IContentDialog<D>::Title(winrt::Windows::Foundation::IInspectable const&)
     // 直接传 L"..." 或 std::wstring 会报 C2665，必须包一层 box_value。
-    if (r == core::KILL_NEEDS_ADMIN) {
-        notice.Title(box_value(L"需要管理员权限"));
+    if (r == core::KILL_ACCESS_DENIED) {
+        // 【不再提供「以管理员身份重启」】
+        // 工具箱整个进程恒定以管理员身份运行（manifest 声明 requireAdministrator），
+        // 所以这里打不开的进程是**系统保护进程**（PPL / 关键进程）——
+        // 提权也打不开，重启本程序更没有任何用处。
+        // 原来那个入口是合并前留下的：那时程序可能以普通用户身份运行，
+        // 遇到权限不足就提示用户「以管理员身份重新启动本程序」。
+        // 合并后那个入口既无效又会误导用户，所以整条链删掉了
+        // （RelaunchElevated 函数、notice_ 的 PrimaryButtonClick 处理器、
+        //  core 里的 KILL_NEEDS_ADMIN 枚举值一并消失）。
+        notice.Title(box_value(L"部分进程无法结束"));
         notice.Content(box_value(
-            (L"「" + name + L"」的部分进程受系统保护，无法结束。\n\n"
-             L"是否以管理员身份重新启动本程序？").c_str()));
-        notice.PrimaryButtonText(L"以管理员身份重启");
-        notice.CloseButtonText(L"取消");
-        notice.DefaultButton(ContentDialogButton::Primary);
+            (L"「" + name + L"」中有进程受系统保护，即使以管理员身份运行也无法结束它。\n\n"
+             L"本次已结束 " + std::to_wstring(killed) + L" 个进程，其余保持运行。").c_str()));
+        notice.PrimaryButtonText(L"");
+        notice.CloseButtonText(L"知道了");
     } else if (r == core::KILL_OK) {
         notice.Title(box_value(L"已结束"));
         notice.Content(box_value((L"已结束 " + std::to_wstring(killed) + L" 个进程。").c_str()));
-        notice.PrimaryButtonText(L"");      // 清掉上一次留下的提权按钮
+        notice.PrimaryButtonText(L"");
         notice.CloseButtonText(L"好");
     } else {
         notice.Title(box_value(L"结束失败"));
@@ -278,8 +269,13 @@ void MonitorPage::WireEvents() {
                      std::move(pids), std::move(name));
     });
 
-    // 提权按钮的处理器只挂一次，FillNotice 负责决定这一次要不要显示它。
-    notice_.PrimaryButtonClick([](auto&&, auto&&) { RelaunchElevated(); });
+    // 【结果提示框不再有主按钮】
+    // 原来这里挂的是「以管理员身份重启」的处理器。合并成工具箱后整个进程
+    // 恒定以管理员身份运行，那条入口既无效（受保护进程提权也打不开）
+    // 又会误导用户，所以整条链删掉了：FillNotice 现在三个分支一律
+    // PrimaryButtonText("") + 一个「知道了 / 好」关闭按钮。
+    // 注意别把 notice_ 的 PrimaryButtonClick 处理器留成空 lambda ——
+    // 那等于把「提权重启」这个入口留在代码里，只是暂时不显示。
 
     // ---- 对话框互斥闸门 --------------------------------------------------
     // 闸门由**外壳**创建并注入，两个页面共用同一把
