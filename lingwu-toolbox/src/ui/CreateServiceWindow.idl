@@ -1,0 +1,73 @@
+// CreateServiceWindow.idl - C++/WinRT component declaration.
+//
+// IMPORTANT: this file MUST stay pure ASCII.
+// MIDL reads source files using the system ANSI code page (936 on zh-CN),
+// not UTF-8. Chinese comments here raise C4819, and this project builds with
+// /WX. Same class of trap as build.bat and the .ps1 scripts.
+//
+// The runtimeclass name and namespace must match both the XAML x:Class
+// attribute and $(RootNamespace) in LingwuToolbox.vcxproj, or the XAML
+// compiler fails with WMC1002.
+
+namespace LingwuToolbox
+{
+    [default_interface]
+    runtimeclass CreateServiceWindow : Microsoft.UI.Xaml.Window
+    {
+        CreateServiceWindow();
+
+        // Read back the user's input on OK. Kept on the projected class
+        // because the owner window only ever holds the projection returned
+        // by make<>() and this cppwinrt has no winrt::get_implementation.
+        //
+        // IMPORTANT -- these are PROPERTIES, not one method with seven
+        // [out] parameters. That shape cannot be expressed in this MIDL
+        // configuration at all:
+        //
+        //   void ReadInputs([out] String a, ...)
+        //     -> MIDL5005 "method parameters cannot have both [in] and
+        //        [out] attributes" on every parameter, i.e. a hard error
+        //        on all seven, plus MIDL5163 saying this `out` is
+        //        redundant (because out is already the default).
+        //
+        //   void ReadInputs(String a, ...)
+        //     -> builds, but cppwinrt's ABI shim passes **const hstring&**,
+        //        so the C++ definition taking hstring& never matches and
+        //        you get a C2664 inside the *generated* header pointing at
+        //        a signature you wrote correctly.
+        //
+        // So there is no spelling of the out-param that works, and the
+        // fix is to not want an out-param. `{ get; }` returns by value
+        // and is already proven in this project by ServiceRow.idl.
+        // Seven cross-ABI getter calls per OK press is not a cost worth
+        // optimising away.
+        String ServiceNameInput     { get; };
+        String DisplayNameInput    { get; };
+        String DescriptionInput    { get; };
+        String BinaryPathInput     { get; };
+        Int32  StartTypeChoice     { get; };
+        String AccountInput        { get; };
+        Boolean StartImmediatelyInput { get; };
+
+        // Whether the window was closed with the Create button (true) or
+        // with Cancel / the X button (false).
+        //
+        // This has to be an explicit flag, not something the caller can infer.
+        // The owner submits the create from this window's Closed callback, so
+        // a user who fills the whole form and then presses Cancel -- or just
+        // clicks X -- would otherwise have the service created anyway.
+        // Inferring it from "are the fields non-empty" is exactly wrong: the
+        // fields still hold whatever was typed.
+        Boolean Accepted { get; };
+
+        // Live validation: the OK button is disabled while this returns
+        // an empty string. Returns the reason, empty when valid.
+        String ValidateName(String serviceName);
+        String ValidateDisplayName(String displayName);
+        String ValidateBinaryPath(String binaryPath);
+
+        // Browse dialog for the binary path. Returns an empty string when
+        // the user cancels, so the caller can tell "cancelled" from "typed".
+        String PickBinaryFile();
+    }
+}

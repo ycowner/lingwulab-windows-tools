@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="LingwuToolbox.ServiceMainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:LingwuToolbox"
+    Title="零物服务管理器">
+
+    <Grid x:Name="RootGrid" RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
+
+        <Grid.Resources>
+            <!-- 行模板。
+
+                 这里用经典 {Binding} 而不是 x:Bind，是被 WMC1506 逼出来的：
+                     WMC1506  OneWay bindings require at least one of their steps
+                              to support raising notifications
+                 x:Bind 是**编译期**绑定，它凭元数据判断源类型支不支持通知。
+                 ServiceRow 的 INotifyPropertyChanged 是**只在 C++ 侧**用
+                 ServiceRowT<ServiceRow, INotifyPropertyChanged> 的模板参数实现的，
+                 并没写进 ServiceRow.idl —— WinUI 的 NuGet 包不提供
+                 Microsoft.UI.Xaml.Data.idl，midl 没法 import。
+                 于是编译器认为不支持通知，把 OneWay 静默降级成一次性读取：
+                 实测状态栏在变、列表里的状态 9 秒纹丝不动。
+
+                 经典 {Binding} 则是在运行期订阅 INotifyPropertyChanged，
+                 纯 C++ 实现的 INPC 照样接得上。代价是走反射路径。
+
+                 但它还有第二个前提，漏了会静默失败：源对象必须自己实现
+                 Microsoft.UI.Xaml.Data.ICustomPropertyProvider。
+                 缺了它的表现与「绑定写错路径」一模一样 —— 行容器在、
+                 Items().Size() 正确、状态栏照常刷新，就是一个字都不显示。
+
+                 行高 32 与 MainWindow.xaml.cpp 里的 kRowHeight 是**同一个常量**的
+                 两份表达：右键命中测试是算术定位（y / 行高 → 下标），
+                 两处必须相等，否则右键会命中错的行。 -->
+            <DataTemplate x:Key="ServiceRowTemplate">
+                <Grid Height="32" ColumnDefinitions="*,88,112,80">
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8"
+                                VerticalAlignment="Center">
+                        <TextBlock Text="{Binding Name}"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding DisplayNameText}"
+                                   VerticalAlignment="Center"
+                                   Opacity="0.6"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding StateText}"
+                               HorizontalAlignment="Left"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding StartTypeText}"
+                               HorizontalAlignment="Left"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="3"
+                               Text="{Binding PidText}"
+                               HorizontalAlignment="Right"
+                               VerticalAlignment="Center"
+                               Opacity="0.85" />
+                </Grid>
+            </DataTemplate>
+
+            <!-- 表头单元格：透明底、无边框、整格可点。Win11 表格表头的标准做法。
+
+                 HorizontalAlignment=Stretch 是对齐的关键，不要删。
+                 WinUI 3 的 DefaultButtonStyle 硬设了 HorizontalAlignment=Left，
+                 按钮因此被内容尺寸化并贴在 Grid 列的左缘；
+                 此时外面写 HorizontalContentAlignment、内容里再写一遍
+                 HorizontalAlignment 全都无效 —— 按钮只包住内容，
+                 右对齐没有空间可对齐。拉伸填满整列之后，内容右缘才等于列右缘。 -->
+            <Style x:Key="ColumnHeaderButton" TargetType="Button">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="0,0,0,0" />
+                <Setter Property="Height" Value="28" />
+                <Setter Property="HorizontalAlignment" Value="Stretch" />
+                <Setter Property="HorizontalContentAlignment" Value="Left" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+                <Setter Property="CornerRadius" Value="4" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
+            </Style>
+
+            <!-- 行容器样式：只改属性，不覆写 ControlTemplate。
+                 覆写成极简模板会在列表第一次填充时抛
+                 STATUS_STOWED_EXCEPTION (0xC000027B)，故障模块 CoreMessagingXP.dll。 -->
+            <Style x:Key="ServiceListItemStyle" TargetType="ListViewItem">
+                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                <Setter Property="Padding" Value="0" />
+                <Setter Property="MinHeight" Value="32" />
+                <Setter Property="UseSystemFocusVisuals" Value="True" />
+            </Style>
+
+            <!-- 行右键菜单。
+                 【为什么定义在 XAML 里而不是 C++ 里拼】
+                 MenuFlyout 在 C++/WinRT 投影里**没有** MenuItems() 方法 ——
+                 那是 UWP 的写法。WinUI 3 要么设 ItemsSource，要么用 XAML 的
+                 子元素集合。在 C++ 里手写会得到
+                     "MenuItems": 不是 "MenuFlyout" 的成员
+                     "MenuItem": 找不到标识符
+                 两个错误都指不到「这 API 在 WinUI 3 里换了写法」。
+                 菜单项的 Click 是 RoutedEventHandler（可用委托族），
+                 所以 x:Name 暴露出来的访问器可以在 .cpp 里挂 lambda。 -->
+            <!-- 类型名是 MenuFlyoutItem，不是 UWP 的 MenuItem。
+                 WinUI 3 把菜单项改成了 MenuFlyoutItem（基类 MenuFlyoutItemBase，
+                 勾选型是 ToggleMenuFlyoutItem）。在 winmd 元数据里
+                 Microsoft.UI.Xaml.Controls.MenuItem 这个类型**根本不存在** ——
+                 那里所有 "MenuItem" 字样都是属性名（FooterMenuItems / MenuItemsSource）。
+                 写错的表现是
+                     XamlCompiler error WMC0001: Unknown type 'MenuItem'
+                 而错误信息完全不会提示「你是不是想写 MenuFlyoutItem」。 -->
+            <MenuFlyout x:Key="RowContextMenu">
+                <MenuFlyoutItem x:Name="CtxStart" Text="启动" />
+                <MenuFlyoutItem x:Name="CtxStop" Text="停止" />
+                <MenuFlyoutItem x:Name="CtxRestart" Text="重启" />
+                <MenuFlyoutSeparator />
+                <MenuFlyoutItem x:Name="CtxDelete" Text="删除服务…" />
+            </MenuFlyout>
+        </Grid.Resources>
+
+        <!-- ============================ 标题栏（可拖拽） ============================ -->
+        <Grid x:Name="TitleBar" Grid.Row="0" Height="48" Background="Transparent">
+            <!-- ExtendsContentIntoTitleBar 之后，DWM 把右侧约 140px 留给
+                 最小化/最大化/关闭，所以这一行右侧必须空着。 -->
+            <StackPanel x:Name="DragRegion"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        Spacing="10"
+                        Margin="16,0,0,0"
+                        Background="Transparent">
+                <FontIcon Glyph="&#xE9D2;" FontSize="14" VerticalAlignment="Center"
+                          Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                <TextBlock Text="零物服务管理器"
+                           VerticalAlignment="Center"
+                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ============================ 命令栏 ============================ -->
+        <Grid x:Name="CommandBar" Grid.Row="1" Margin="32,4,32,12" ColumnDefinitions="*,Auto">
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="12"
+                        VerticalAlignment="Center">
+                <AutoSuggestBox x:Name="SearchBox"
+                                Width="300"
+                                VerticalAlignment="Center"
+                                PlaceholderText="搜索服务名或显示名" />
+                <ComboBox x:Name="FilterBox"
+                          Width="140"
+                          VerticalAlignment="Center"
+                          ToolTipService.ToolTip="按状态筛选" />
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Spacing="12">
+                <Button x:Name="NewServiceButton" Content="新建服务" VerticalAlignment="Center" />
+                <Button x:Name="RefreshButton" Content="刷新" VerticalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ============================ 表头（点击排序） ============================ -->
+        <Grid x:Name="HeaderGrid" Grid.Row="2" Height="32" Margin="32,0,32,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="88" />
+                <ColumnDefinition Width="112" />
+                <ColumnDefinition Width="80" />
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="HeaderName" Grid.Column="0" Style="{StaticResource ColumnHeaderButton}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Path x:Name="ArrowName" Width="9" Height="9" VerticalAlignment="Center"
+                          Fill="{ThemeResource TextFillColorPrimaryBrush}" Visibility="Collapsed"
+                          Data="M 0,5 L 9,5 L 4.5,0 Z" RenderTransformOrigin="0.5,0.5">
+                        <Path.RenderTransform>
+                            <RotateTransform x:Name="RotName" Angle="0" />
+                        </Path.RenderTransform>
+                    </Path>
+                    <TextBlock Text="服务" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="HeaderState" Grid.Column="1" Style="{StaticResource ColumnHeaderButton}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Path x:Name="ArrowState" Width="9" Height="9" VerticalAlignment="Center"
+                          Fill="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed"
+                          Data="M 0,5 L 9,5 L 4.5,0 Z" RenderTransformOrigin="0.5,0.5">
+                        <Path.RenderTransform>
+                            <RotateTransform x:Name="RotState" Angle="0" />
+                        </Path.RenderTransform>
+                    </Path>
+                    <TextBlock Text="状态" />
+                </StackPanel>
+            </Button>
+
+            <Button x:Name="HeaderStartType" Grid.Column="2" Style="{StaticResource ColumnHeaderButton}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Path x:Name="ArrowStartType" Width="9" Height="9" VerticalAlignment="Center"
+                          Fill="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed"
+                          Data="M 0,5 L 9,5 L 4.5,0 Z" RenderTransformOrigin="0.5,0.5">
+                        <Path.RenderTransform>
+                            <RotateTransform x:Name="RotStartType" Angle="0" />
+                        </Path.RenderTransform>
+                    </Path>
+                    <TextBlock Text="启动类型" />
+                </StackPanel>
+            </Button>
+
+            <Button Grid.Column="3" Style="{StaticResource ColumnHeaderButton}"
+                    HorizontalContentAlignment="Right" IsEnabled="False">
+                <TextBlock Text="进程 ID" />
+            </Button>
+        </Grid>
+
+        <!-- ============================ 列表 ============================ -->
+        <!-- 左右 Padding 与 HeaderGrid 的 Margin="32,0,32,0" 是同一组不变量，
+             四个元素（CommandBar / HeaderGrid / 本列表 / 状态栏）必须成组相等，
+             否则左右基线会错开 —— 单改一处只错半边，肉眼极易放过。
+
+             右半边的下界来自 WinUI 覆盖式滚动条：ScrollBarSize = 16 DIP，
+             而滚动条不占布局空间（滑块直接盖在内容之上），所以右内边距必须 ≥ 16 DIP，
+             滑块才只压空白、不盖住最右侧的数值。当前取 32，比下界多留 16 DIP 余量。
+
+             注意这里必须用 Padding 而不是 Margin：ListView 模板会把 Padding
+             透传给内部 ItemsPresenter；换成 Margin 的话右侧不会留出内缩的死区。 -->
+        <ListView x:Name="ServiceList"
+                  Grid.Row="3"
+                  ItemTemplate="{StaticResource ServiceRowTemplate}"
+                  ItemContainerStyle="{StaticResource ServiceListItemStyle}"
+                  SelectionMode="Single"
+                  HorizontalContentAlignment="Stretch"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                  ScrollViewer.HorizontalScrollMode="Disabled"
+                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                  ScrollViewer.VerticalScrollMode="Auto"
+                  Padding="32,0,32,0" />
+
+        <!-- ============================ 详情面板（只读） ============================ -->
+        <Expander x:Name="DetailExpander"
+                  Grid.Row="4"
+                  Margin="32,8,32,0"
+                  HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Stretch">
+            <Expander.Header>
+                <TextBlock Text="选中服务详情" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+            </Expander.Header>
+
+            <Grid x:Name="DetailPanel" ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="可执行路径" Margin="0,0,12,4"
+                           Opacity="0.7" />
+                <TextBlock x:Name="DetailBinaryPath" Grid.Row="0" Grid.Column="1" TextTrimming="CharacterEllipsis"
+                           Margin="0,0,0,4" ToolTipService.ToolTip="{Binding}" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="运行账户" Margin="0,0,12,4"
+                           Opacity="0.7" />
+                <TextBlock x:Name="DetailAccount" Grid.Row="1" Grid.Column="1" Margin="0,0,0,4"
+                           TextTrimming="CharacterEllipsis" />
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="描述" Margin="0,0,12,4"
+                           Opacity="0.7" />
+                <TextBlock x:Name="DetailDescription" Grid.Row="2" Grid.Column="1" TextWrapping="Wrap"
+                           Margin="0,0,0,4" MaxLines="3" TextTrimming="CharacterEllipsis" />
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="依赖服务" Margin="0,0,12,4"
+                           Opacity="0.7" />
+                <TextBlock x:Name="DetailDependencies" Grid.Row="3" Grid.Column="1" TextWrapping="Wrap"
+                           Margin="0,0,0,4" MaxLines="2" TextTrimming="CharacterEllipsis" />
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="当前状态" Margin="0,0,12,4"
+                           Opacity="0.7" />
+                <TextBlock x:Name="DetailStatus" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8"
+                           TextWrapping="Wrap" />
+
+                <!-- 操作按钮行。禁用态由代码后置按选中项状态设置。 -->
+                <StackPanel Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2"
+                            Orientation="Horizontal" Spacing="8">
+                    <Button x:Name="StartButton" Content="启动" />
+                    <Button x:Name="StopButton" Content="停止" />
+                    <Button x:Name="RestartButton" Content="重启" />
+                    <ComboBox x:Name="StartTypeBox" Width="170" VerticalAlignment="Center"
+                              ToolTipService.ToolTip="修改启动类型" />
+                    <Button x:Name="StartTypeApplyButton" Content="应用"
+                            VerticalAlignment="Center" IsEnabled="False" />
+                    <Button x:Name="DeleteButton" Content="删除服务" />
+                </StackPanel>
+            </Grid>
+        </Expander>
+
+        <!-- ============================ 状态栏 ============================ -->
+        <Grid x:Name="StatusBar" Grid.Row="5" Height="30" Margin="32,8,32,8"
+              ColumnDefinitions="*,Auto">
+            <TextBlock x:Name="StatusLeft" Grid.Column="0"
+                       VerticalAlignment="Center"
+                       Opacity="0.85"
+                       TextTrimming="CharacterEllipsis"
+                       Style="{ThemeResource CaptionTextBlockStyle}" />
+            <TextBlock x:Name="StatusRight" Grid.Column="1"
+                       VerticalAlignment="Center"
+                       Opacity="0.85"
+                       TextTrimming="CharacterEllipsis"
+                       Style="{ThemeResource CaptionTextBlockStyle}" />
+        </Grid>
+
+    </Grid>
+</Window>

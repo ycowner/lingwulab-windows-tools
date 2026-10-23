@@ -7,9 +7,9 @@
 #             packaging\make-sfx.ps1 的暂存区（build\pack\payload.bin 约 60 MB）
 # dist/    —— OutDir=$(ProjectDir)dist\$(Configuration)，以及打包输出 dist\package
 # obj/     —— NuGet 还原产物（project.assets.json 等）
-/lingwu-sysmon/build/
-/lingwu-sysmon/dist/
-/lingwu-sysmon/obj/
+/lingwu-toolbox/build/
+/lingwu-toolbox/dist/
+/lingwu-toolbox/obj/
 /lingwu-service-manager/build/
 /lingwu-service-manager/dist/
 /lingwu-service-manager/obj/
@@ -31,4 +31,4 @@
 *.ilk
 
 # ---- 一次性内存测量原始数据（用 tools\mem.ps1 重新生成） ----
-/lingwu-sysmon/tools/_run*.csv
+/lingwu-toolbox/tools/_run*.csv

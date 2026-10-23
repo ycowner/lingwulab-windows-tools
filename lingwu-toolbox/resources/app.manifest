@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="Lingwu.Toolbox" version="0.0.1.0" processorArchitecture="amd64"/>
+  <description>Lingwu Toolbox - Windows System Tools</description>
+
+  <!-- Per-Monitor V2: 高分屏下主界面不会糊。
+       WinUI 3 自身也要求 PerMonitorV2，manifest 与运行期声明必须一致。 -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+
+  <!-- supportedOS 是未打包应用必须声明的：缺它会导致平台 API 行为降级
+       （例如 DWM / 输入 / 主题相关的版本判定会退回 Win7 时代的保守路径）。
+       这一个 GUID 同时覆盖 Windows 10 与 Windows 11。 -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+
+  <!-- 刻意不声明 Microsoft.Windows.Common-Controls v6 依赖：
+       WinUI 3 走的是自己的 XAML 控件栈，不经过 comctl32，
+       声明了只会白拉 comctl32.dll 进进程。 -->
+
+  <!-- 提权：整个工具箱默认以管理员身份运行。
+
+       【为什么改过来了】
+       合并前两个工具的权限模型不一样：
+         · 性能监视器 —— 普通权限。结束他人进程时若权限不足会提示。
+         · 服务管理器 —— 普通权限启动，需要写服务时弹提示，由用户点
+           「以管理员身份重新启动」再整程序提权重开。
+       合并成一个进程后，这个「按需提权重启」的路径不再成立 ——
+       提权会重启整个工具箱，把常驻托盘的性能监视一起带走，
+       而服务管理的写操作本身只是几个 SCM 调用。
+       所以改成**默认提权**：写操作直接生效，不必二次点击。
+
+       【代价，必须让用户知道】
+       1. 每次双击启动都会弹一次 UAC。
+       2. **开机自启会弹 UAC**：HKCU\...\Run 启动一个声明
+          requireAdministrator 的程序时，Windows 会弹 UAC 提示框。
+          用户若没及时点「是」，自启动会静默失败（进程没起来、
+          托盘没图标，但注册表项还在）。
+       3. 进程长期以管理员权限驻留在托盘，安全暴露面比普通权限大。
+
+       踩坑记录：这一段注释曾经漏了结尾的箭头符号，XML 注释不支持嵌套，
+       于是它一路吞到文件末尾的 </assembly>，链接阶段的 mt.exe 报
+       "general error c1010070: Failed to load and parse the manifest"，
+       C++ 侧一个错都没有，看着像链接器坏了。
+
+       【同步要求】这里的 level="requireAdministrator" 必须与
+       LingwuToolbox.vcxproj 的 <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+       一致。链接器会自带一份 trustInfo，两份由 mt.exe 合并，
+       level 不相等时报 "manifest authoring error c1010001:
+       Values of attribute "level" not equal in different manifest snippets"，
+       链接阶段以 LNK1327 挂掉。改一边忘了另一边就是这个症状。 -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>
