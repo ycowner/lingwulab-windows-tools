@@ -22,7 +22,13 @@ $ErrorActionPreference = 'Stop'
 # The asset name is <Product>-<ver>-win64.exe, and both halves come from the tag
 # prefix, so a typo in the tag fails loudly here instead of reporting a bogus
 # "asset missing".
+#
+# 2026-10-23: lingwu-sysmon and lingwu-service-manager were merged into
+# lingwu-toolbox. The first two entries are **kept on purpose** -- their
+# releases are already published and must stay verifiable; only the release
+# line itself moved.
 $tools = @{
+    'lingwu-toolbox'          = 'LingwuToolbox'
     'lingwu-sysmon'           = 'LingwuSysmon'
     'lingwu-service-manager'  = 'LingwuServiceManager'
 }

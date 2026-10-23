@@ -2,21 +2,24 @@
 
 LingwuLab 的 Windows 系统工具集。
 
-每个工具是仓库下的一个独立子目录，各自带完整的 README、构建脚本与验收脚本。
-
-## 包含的工具
+## 工具
 
 | 目录 | 说明 | 版本 | 下载 |
 |---|---|---|---|
-| [lingwu-sysmon](lingwu-sysmon/) | Windows 系统监视器（进程 / CPU / 内存 / 网络聚合），C++/WinRT + WinUI 3 | 0.0.1 | [LingwuSysmon-0.0.1-win64.exe](https://github.com/ycowner/lingwulab-windows-tools/releases/download/lingwu-sysmon-v0.0.1/LingwuSysmon-0.0.1-win64.exe) |
-| [lingwu-service-manager](lingwu-service-manager/) | 服务管理器（列表 / 搜索 / 筛选 / 启停 / 启动类型 / 创建 / 删除），C++/WinRT + WinUI 3 | 0.0.1 | 见该目录 [README](lingwu-service-manager/README.md) |
+| [lingwu-toolbox](lingwu-toolbox/) | **零物工具箱**：性能监视（进程 / CPU / 内存 / 网络聚合）+ 服务管理（列表 / 搜索 / 筛选 / 启停 / 启动类型 / 创建 / 删除），合为一个 exe、一个窗口、两条导航，C++/WinRT + WinUI 3 | 0.0.1 | 见 [lingwu-toolbox/README.md](lingwu-toolbox/README.md) |
+
+两个工具原本是分开的两个程序（`lingwu-sysmon` 与 `lingwu-service-manager`），
+2026-10-23 合并成上面这一个。合并前已发布的两条 release 保留原处，tag 不动：
+
+- [LingwuSysmon-0.0.1-win64.exe](https://github.com/ycowner/lingwulab-windows-tools/releases/download/lingwu-sysmon-v0.0.1/LingwuSysmon-0.0.1-win64.exe)
+- `lingwu-service-manager-v0.0.1`（见该仓库的 Releases 列表）
 
 ## 构建
 
 构建在工具自己的子目录内进行：
 
 ```bat
-cd lingwu-sysmon
+cd lingwu-toolbox
 build.bat
 ```
 
@@ -24,24 +27,23 @@ build.bat
 `build.bat` 与 `packaging\build-sfx.bat` 都会先读环境变量 `LINGWU_VSPATH`，
 未设置时再退回 `vswhere` 自动探测——CI 必须显式设置它，见下。
 
-各工具的完整说明、环境要求与验收方法见其子目录下的 `README.md`。
+完整说明、环境要求、权限模型与验收方法见 [lingwu-toolbox/README.md](lingwu-toolbox/README.md)。
 
 ## 发布
 
 ### tag 约定
 
-每个工具拥有一条独立的 tag 命名空间：`<工具目录名>-vX.Y.Z`。
+一条 tag 命名空间：`<工具目录名>-vX.Y.Z`。
 
 ```bat
-git tag lingwu-sysmon-v0.0.1
-git push origin lingwu-sysmon-v0.0.1
+git tag lingwu-toolbox-v0.0.1
+git push origin lingwu-toolbox-v0.0.1
 ```
 
-推送 tag 即触发 `.github/workflows/release-sysmon.yml`：在 `windows-2025`
+推送 tag 即触发 `.github/workflows/release-toolbox.yml`：在 `windows-2025`
 runner 上重新构建、打包成单文件 SFX，然后创建 GitHub Release 并挂上
-`LingwuSysmon-<版本>-win64.exe`。不需要手动传任何密钥，用的是
-`GITHUB_TOKEN`。`lingwu-service-manager-vX.Y.Z` 走
-`.github/workflows/release-svcmgr.yml`，两者互不干扰。
+`LingwuToolbox-<版本>-win64.exe`。不需要手动传任何密钥，用的是
+`GITHUB_TOKEN`。
 
 用 `-` 而不是 `/` 分隔是有意的：tag 里带斜杠虽然更常见，但下载链接里的
 斜杠必须编码成 `%2F`，任何脚本化引用都会踩坑。
@@ -69,22 +71,11 @@ runner 上重新构建、打包成单文件 SFX，然后创建 GitHub Release �
 因此让发版失败，因为记账不一致不该拦住一个 tag 正确的发布。改动版本后记得
 同步更新本文件上方的版本表格。
 
-### 已知取舍
+### 合并前后的发布线
 
-GitHub Release 挂在 tag 上，而 tag 是整个仓库共享的扁平命名空间，**目录名
-不参与**。因此：
+合并之前每个工具各有一条 workflow 与一条 tag 命名空间；合并之后只剩一条
+（`release-toolbox.yml` + `lingwu-toolbox-v*`）。已经发布的历史 release
+**不会被删除也不会被移动** —— 已发布的 tag 是既成事实。
 
-- 各工具的版本线互相独立，不会互相顶掉——靠的是 tag 前缀约定。
-- 但所有 Release 出现在同一个列表里，**无法按目录分区显示**。
-- 全仓库只有一个 `Latest` 标记，发任一工具都会把它移到该工具的新版上。
-
-工具数量变多后，可以在根目录加一个下载索引页（GitHub Pages + 从 Release
-API 拉取）来提供分区视图；tag 约定不用改。
-
-### 新增一个工具的发布
-
-1. 建 `<新工具>/` 子目录，结构照 `lingwu-sysmon/`。
-2. 复制 `.github/workflows/release-sysmon.yml`，改三处：`name`、
-   tag 触发模式、Release 标题；VS 发现步骤可以原样保留。
-3. `build.bat` / `make-sfx.ps1` 也需要一份，或者抽到仓库根做成共享脚本
-   （多个工具共用同一套打包链时值得做）。
+`.gh-verify.ps1` 里同时保留了三条映射（toolbox / sysmon / service-manager），
+就是为了让历史 release 仍然可被校验。

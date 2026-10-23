@@ -1,14 +1,21 @@
-name: release-svcmgr
+name: release-toolbox
 
-# Per-tool release. Each tool in this repo owns a tag namespace of the form
-# <tool>-vX.Y.Z and its own workflow; pushing one tool's tag must never touch
-# another tool's releases. Releases themselves are repo-wide by nature (GitHub
-# keys them on a flat tag namespace, not on a directory), so the isolation here
-# is entirely a convention + workflow-trigger convention.
+# The one and only release line.
+#
+# 2026-10-23: lingwu-sysmon and lingwu-service-manager were merged into a
+# single program, lingwu-toolbox. This workflow replaces release-sysmon.yml
+# and release-svcmgr.yml -- both of those, and their two tag namespaces, are
+# gone. The two already-published releases (lingwu-sysmon-v0.0.1,
+# lingwu-service-manager-v0.0.1) stay exactly where they are: a published
+# tag must never move.
+#
+# The tag is the single authority for the version. Everything downstream
+# (package name, VERSIONINFO block, release title) is derived from it, so a
+# published artifact can never disagree with the tag it sits under.
 on:
   push:
     tags:
-      - 'lingwu-service-manager-v*'
+      - 'lingwu-toolbox-v*'
 
 permissions:
   contents: write
@@ -43,8 +50,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = $env:GITHUB_REF_NAME
-          if ($tag -notmatch '^lingwu-service-manager-v(\d+\.\d+\.\d+)$') {
-            throw "Tag '$tag' does not match the required form lingwu-service-manager-vX.Y.Z."
+          if ($tag -notmatch '^lingwu-toolbox-v(\d+\.\d+\.\d+)$') {
+            throw "Tag '$tag' does not match the required form lingwu-toolbox-vX.Y.Z."
           }
           $v = $Matches[1]
           "version=$v"  >> $env:GITHUB_OUTPUT
@@ -87,24 +94,24 @@ jobs:
       # resolve. WindowsTargetPlatformMinVersion (10.0.17763.0) is the runtime
       # API floor and is deliberately left untouched: that one is a project
       # invariant, not a toolchain lookup.
-      - name: Build LingwuServiceManager.exe
-        working-directory: lingwu-service-manager
+      - name: Build LingwuToolbox.exe
+        working-directory: lingwu-toolbox
         shell: cmd
         run: build.bat -p:WindowsTargetPlatformVersion=10.0
 
       - name: Verify the rebuilt exe is actually new
         shell: pwsh
-        working-directory: lingwu-service-manager
+        working-directory: lingwu-toolbox
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = '.\dist\Release\LingwuServiceManager.exe'
+          $exe = '.\dist\Release\LingwuToolbox.exe'
           if (-not (Test-Path $exe)) { throw "Build reported success but $exe is missing." }
-          Write-Host ("LingwuServiceManager.exe = {0:N0} bytes, built {1}" -f `
+          Write-Host ("LingwuToolbox.exe = {0:N0} bytes, built {1}" -f `
                       (Get-Item $exe).Length, (Get-Item $exe).LastWriteTime)
 
       # ---- package -------------------------------------------------------
       - name: Package self-extracting exe
-        working-directory: lingwu-service-manager
+        working-directory: lingwu-toolbox
         shell: pwsh
         run: pwsh -NoProfile -File .\packaging\make-sfx.ps1 -Version ${{ steps.ver.outputs.version }}
 
@@ -113,7 +120,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = 'lingwu-service-manager\dist\package\LingwuServiceManager-${{ steps.ver.outputs.version }}-win64.exe'
+          $exe = 'lingwu-toolbox\dist\package\LingwuToolbox-${{ steps.ver.outputs.version }}-win64.exe'
           if (-not (Test-Path $exe)) { throw "Expected package $exe was not produced." }
           $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
           Write-Host ("Asset: {0} ({1} MB)" -f $exe, $mb)
@@ -137,7 +144,7 @@ jobs:
           $ver    = '${{ steps.ver.outputs.version }}'
           $repo   = $env:GITHUB_REPOSITORY
 
-          $all  = @(git tag --list 'lingwu-service-manager-v*' --sort=-v:refname)
+          $all  = @(git tag --list 'lingwu-toolbox-v*' --sort=-v:refname)
           $prev = $all | Where-Object { $_ -ne $tag } | Select-Object -First 1
 
           if ($prev) {
@@ -147,10 +154,10 @@ jobs:
           } else {
             $range = $tag
             $link  = "https://github.com/$repo/commits/$tag"
-            Write-Host "No previous lingwu-service-manager tag; using full history."
+            Write-Host "No previous lingwu-toolbox tag; using full history."
           }
 
-          $subjects = @(git log --no-merges --pretty=format:'%s' $range -- lingwu-service-manager)
+          $subjects = @(git log --no-merges --pretty=format:'%s' $range -- lingwu-toolbox)
           $body = if ($subjects) {
               ($subjects | ForEach-Object { "- $_" }) -join "`n"
           } else {
@@ -161,9 +168,11 @@ jobs:
           # verbatim in English: the product name, version numbers, commit
           # subjects (reproduced as written, not translated), file names and URLs.
           $notes = @"
-          ## Lingwu Service Manager v$ver
+          ## Lingwu Toolbox v$ver
 
           Windows x64 单文件免安装版，解压即用。
+
+          性能监视与服务管理合为一个程序，常驻托盘，默认以管理员身份运行。
 
           $body
 
@@ -207,7 +216,7 @@ jobs:
 
           gh release create $tag $asset `
             --repo $repo `
-            --title "Lingwu Service Manager v$ver" `
+            --title "Lingwu Toolbox v$ver" `
             --notes-file $notes `
             --latest
           # gh exiting non-zero does NOT fail a PowerShell step on its own, so
@@ -232,7 +241,7 @@ jobs:
           $repo = $env:GITHUB_REPOSITORY
           $tag  = '${{ steps.ver.outputs.tag }}'
           $ver  = '${{ steps.ver.outputs.version }}'
-          $want = "LingwuServiceManager-$ver-win64.exe"
+          $want = "LingwuToolbox-$ver-win64.exe"
 
           $raw = gh release view $tag --repo $repo --json tagName,name,isDraft,isPrerelease,assets,url
           if ($LASTEXITCODE -ne 0) { throw "gh release view failed for $tag." }
@@ -264,7 +273,7 @@ jobs:
       - name: Warn if the in-repo version literal is stale
         if: always()
         shell: pwsh
-        working-directory: lingwu-service-manager
+        working-directory: lingwu-toolbox
         run: |
           $ErrorActionPreference = 'Stop'
           $ver = '${{ steps.ver.outputs.version }}'

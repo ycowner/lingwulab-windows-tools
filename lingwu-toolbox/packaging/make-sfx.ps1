@@ -145,7 +145,7 @@ BEGIN
             VALUE "CompanyName",      "LingwuLab"
             VALUE "FileDescription",  "Lingwu Toolbox - portable launcher"
             VALUE "FileVersion",      "$verQuad"
-            VALUE "InternalName",     "LingwuSysmonPortable"
+            VALUE "InternalName",     "LingwuToolboxPortable"
             VALUE "OriginalFilename", "LingwuToolbox-$ver-win64.exe"
             VALUE "ProductName",      "Lingwu Toolbox"
             VALUE "ProductVersion",   "$verQuad"

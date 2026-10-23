@@ -71,7 +71,7 @@ void MaybeShowTrayHintImpl() {
     wcsncpy_s(nid.szInfoTitle, L"托盘图标在哪儿", _TRUNCATE);
     wcsncpy_s(nid.szInfo,
               L"图标默认被 Windows 收进了「隐藏图标」区（任务栏右侧的 ^ 里）。\n"
-              L"点开 ^ 把 Lingwu SysMon 拖到可见区域即可。",
+              L"点开 ^ 把零物工具箱拖到可见区域即可。",
               _TRUNCATE);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
 }
@@ -360,7 +360,7 @@ bool InitTrayIcon(const TrayCallbacks& cb) {
     g_nid.uFlags      = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAY_CB;
     g_nid.hIcon       = LoadTrayIcon();
-    wcsncpy_s(g_nid.szTip, L"Lingwu SysMon · 系统监控", _TRUNCATE);
+    wcsncpy_s(g_nid.szTip, L"Lingwu Toolbox · 零物工具箱", _TRUNCATE);
 
     g_added = (Shell_NotifyIconW(NIM_ADD, &g_nid) != FALSE);
     if (g_added) {

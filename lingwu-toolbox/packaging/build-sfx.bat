@@ -20,7 +20,7 @@ if "%~1"=="" (
     exit /b 1
 )
 set "VER=%~1"
-set "EXE=%OUT%\LingwuSysmon-%VER%-win64.exe"
+set "EXE=%OUT%\LingwuToolbox-%VER%-win64.exe"
 
 rem Toolchain location. See ..\build.bat for the resolution order and why
 rem LINGWU_VSPATH exists: CI must pin v144 explicitly rather than let vswhere
@@ -57,7 +57,11 @@ if errorlevel 1 (
 )
 
 echo [2/3] Compiling launcher...
-cl /nologo /c /W3 /WX /EHsc /O2 /MT /GS /utf-8 /std:c++17 /Fo:sfx_main.obj "%HERE%sfx_main.cpp"
+rem /GL is required: the link step below uses /LTCG, and the linker warns
+rem ("/LTCG requires whole program optimization") when the object files were
+rem not produced with /GL. The project rule is zero warnings, and this is the
+rem only one the packaging chain emits.
+cl /nologo /c /W3 /WX /EHsc /O2 /MT /GS /utf-8 /std:c++17 /GL /Fo:sfx_main.obj "%HERE%sfx_main.cpp"
 if errorlevel 1 (
     echo ERROR: compile failed.
     exit /b 1
