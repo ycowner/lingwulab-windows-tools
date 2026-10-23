@@ -108,6 +108,20 @@ if (-not $win) { Write-Host 'MAIN WINDOW NOT FOUND'; exit 1 }
 $mainHwnd = $win.Current.NativeWindowHandle
 Start-Sleep -Seconds 14   # 等列表刷出第一帧，和 uimenu.ps1 一致
 
+# 断言计数器。ini 往返是设置窗口的核心契约，原来只把 ini 内容打印出来、
+# 从不断言 —— 于是「设置真的落盘了」和「脚本跑完但什么都没验成」长得一样。
+$script:Pass = 0
+$script:Fail = 0
+function Assert-True([string]$What, [bool]$Cond, [string]$Extra = '') {
+    if ($Cond) {
+        $script:Pass++
+        Write-Host ("  [PASS] {0} {1}" -f $What, $Extra)
+    } else {
+        $script:Fail++
+        Write-Host ("  [FAIL] {0} {1}" -f $What, $Extra)
+    }
+}
+
 # ---- 1) 打开设置窗口 ------------------------------------------------------
 # 命令栏上的「设置」按钮。先按 AutomationId 找，找不到再按名字（按钮没有显式 id）。
 $settingsBtn = $null
@@ -215,8 +229,7 @@ if ($CancelMode) {
     $cancelBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Start-Sleep -Seconds 2
     $afterIni = Read-Ini
-    if ($beforeIni -eq $afterIni) { Write-Host 'PASS: ini unchanged after cancel' }
-    else { Write-Host 'FAIL: ini changed after cancel' }
+    Assert-True '点「取消」之后 ini 没有被改' ($beforeIni -eq $afterIni)
 } else {
     Write-Host '--- OK MODE: clicking 确定 ---'
     $okBtn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
@@ -231,10 +244,18 @@ $afterIni = Read-Ini
 Write-Host '--- ini after ---'
 if ($afterIni) { Write-Host $afterIni } else { Write-Host '<no ini file>' }
 
+# ini 往返是设置窗口的核心契约：确定之后，设置值必须真的落到 ini 里。
+# 这里只断言「键在不在」，不断言具体取值 —— 取值随下拉档位变，
+# 断言键的存在性更稳，具体的取值由 apply.ps1 单独验。
+Assert-True 'ini 文件在确定之后存在' ([bool]$afterIni)
+Assert-True 'ini 里有 MonitorSortMode' ($afterIni -match 'MonitorSortMode')
+Assert-True 'ini 里有 MonitorIntervalMs' ($afterIni -match 'MonitorIntervalMs')
+
 # ---- 6) 主窗口是否还活着（设置窗口关闭不该带走主窗口） ---------------------
 Start-Sleep -Seconds 2
 $p.Refresh()
 Write-Host ("alive=$(-not $p.HasExited) priv=$([math]::Round($p.PrivateMemorySize64/1MB,1))MB")
+Assert-True '设置窗口关闭之后主窗口还活着' (-not $p.HasExited)
 
 # ---- 7) 还原 ini，绝不在用户机器上留我们编的值 ----------------------------
 if ($hadIni) {
@@ -254,3 +275,8 @@ if (Test-Path $IniBackup) {
 Write-Host "SHOT1=$shot1"
 Write-Host "SHOT2=$shot2"
 Write-Host "SHOT3=$shot3"
+
+Write-Host ''
+Write-Host '=========================================================='
+Write-Host ("RESULT: pass={0}  fail={1}" -f $script:Pass, $script:Fail)
+if ($script:Fail -gt 0) { exit 1 } else { exit 0 }

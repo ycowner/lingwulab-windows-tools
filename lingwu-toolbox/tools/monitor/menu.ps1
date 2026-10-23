@@ -43,6 +43,20 @@ $win = Get-Win $p.Id
 if (-not $win) { Write-Host 'WINDOW NOT FOUND'; exit 1 }
 Start-Sleep -Seconds 14
 
+# 断言计数器。这个脚本原本只在「打印所见」，失败路径靠 exit 1 表达，
+# 验收板上数不出断言条数 —— 补上标记，板上的数才有意义。
+$script:Pass = 0
+$script:Fail = 0
+function Assert-True([string]$What, [bool]$Cond, [string]$Extra = '') {
+    if ($Cond) {
+        $script:Pass++
+        Write-Host ("  [PASS] {0} {1}" -f $What, $Extra)
+    } else {
+        $script:Fail++
+        Write-Host ("  [FAIL] {0} {1}" -f $What, $Extra)
+    }
+}
+
 function Find-Id($root, [string]$id) {
     $c = New-Object System.Windows.Automation.PropertyCondition($AE::AutomationIdProperty, $id)
     return $root.FindFirst($TS::Descendants, $c)
@@ -81,6 +95,7 @@ function Shot([string]$path) {
 # ---- 1) 右键菜单 ---------------------------------------------------------
 $list = Find-Id $win 'ProcessList'
 if (-not $list) { Write-Host 'ProcessList NOT FOUND'; exit 1 }
+Assert-True '找得到进程列表' $true
 $lr = $list.Current.BoundingRectangle
 Write-Host ("list rect = $([int]$lr.X),$([int]$lr.Y),$([int]$lr.Width)x$([int]$lr.Height)")
 
@@ -107,6 +122,7 @@ Write-Host ("menu shot: " + (Shot $m))
 $menuItem = $null
 $items = Find-ByTypeInProc $p.Id ([System.Windows.Automation.ControlType]::MenuItem)
 Write-Host ("menuitems in our process: " + $items.Count)
+Assert-True '右键菜单真的弹出来了' ($items.Count -gt 0) "items=$($items.Count)"
 foreach ($it in $items) {
     $n = $it.Current.Name
     if ($n) { Write-Host "  item: '$n'" }
@@ -114,6 +130,7 @@ foreach ($it in $items) {
 }
 if (-not $menuItem) { Write-Host 'MENU ITEM NOT FOUND'; Write-Host "M=$m"; exit 1 }
 Write-Host ("found menu item: '" + $menuItem.Current.Name + "'")
+Assert-True '菜单里有「结束任务」' $true $menuItem.Current.Name
 $menuItem.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 Start-Sleep -Seconds 2
 
@@ -135,8 +152,10 @@ if ($cancel) {
     Write-Host ("clicking cancel: '" + $cancel.Current.Name + "'")
     $cancel.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     Start-Sleep -Seconds 2
+    Assert-True '确认框里有「取消」并且点得动' $true $cancel.Current.Name
 } else {
     Write-Host 'CANCEL BUTTON NOT FOUND'
+    Assert-True '确认框里有「取消」' $false
 }
 $e = Join-Path $env:TEMP "$Prefix`_3_cancelled.png"
 Write-Host ("after cancel shot: " + (Shot $e))
@@ -146,3 +165,11 @@ Write-Host "D=$d"
 Write-Host "E=$e"
 $p.Refresh()
 Write-Host ("alive=$(-not $p.HasExited) priv=$([math]::Round($p.PrivateMemorySize64/1MB,1))MB")
+# 点「取消」之后应用必须还活着 —— 这一步要是杀错了进程（跨进程误匹配过），
+# 应用会跟着没。
+Assert-True '点「取消」之后应用还活着' (-not $p.HasExited)
+
+Write-Host ''
+Write-Host '=========================================================='
+Write-Host ("RESULT: pass={0}  fail={1}" -f $script:Pass, $script:Fail)
+if ($script:Fail -gt 0) { exit 1 } else { exit 0 }
