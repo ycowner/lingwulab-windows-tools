@@ -21,7 +21,7 @@
 
 #include <winrt/Windows.Foundation.Collections.h>
 
-// SortMode 枚举（SORT_MEM_DESC 等）在 core/metrics.h 里，**不在**
+// SortMode 枚举（SORT_MEM_DESC 等）在 core/monitor/metrics.h 里，**不在**
 // core/settings.h 里。.xaml.h 只 include 了 settings.h，所以这里必须补。
 // 少了它的报错很有欺骗性：`lingwu::core::monitor` 命名空间本身是好的，
 // 报的却是 C2039「SORT_MEM_DESC 不是 lingwu::core::monitor 的成员」，

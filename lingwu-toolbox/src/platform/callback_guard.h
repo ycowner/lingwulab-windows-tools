@@ -11,7 +11,7 @@
 //   · 事件日志只有一条 0xC0000409，没有任何异常信息；
 //   · trace 里也什么都没有（异常在第一条日志之前就抛了）。
 //
-// 2026-10-20 的真实崩溃就是这个签名。用 build/obj/Release/LingwuSysmon.map
+// 2026-10-20 的真实崩溃就是这个签名。用 build/obj/Release/LingwuToolbox.map
 // 符号化：0x14003f739 = abort(0x14003f704) + 0x35 —— 确证是 CRT 的
 // std::terminate 路径，不是随机内存破坏。
 //

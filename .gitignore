@@ -32,3 +32,17 @@
 
 # ---- 一次性内存测量原始数据（用 tools\mem.ps1 重新生成） ----
 /lingwu-toolbox/tools/_run*.csv
+
+# ---- 仓库根的一次性草稿（不进版本库） ----
+#
+# 这几个是 2026-10-15 做 lingwu-sysmon 发布时手写的一次性脚本与草稿：
+# .gh-log.ps1 / .gh-notes.ps1 / .gh-watch.ps1 用 `git credential fill`
+# 临时取 token 去调 GitHub API（token 不落盘，所以不是泄密），但它们指向
+# 的是旧仓库与旧 tag，已经没有保留价值；.git-commit-msg.txt 是暂存的
+# commit message 草稿。
+#
+# 不删文件（那是别人的草稿），只是不让 `git add -A` 顺手把它们带进去。
+/.gh-log.ps1
+/.gh-notes.ps1
+/.gh-watch.ps1
+/.git-commit-msg.txt

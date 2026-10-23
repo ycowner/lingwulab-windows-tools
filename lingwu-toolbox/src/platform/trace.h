@@ -7,8 +7,8 @@
 // 表现只是「进程活着但一个窗口都没有」。没有 trace 就只能靠猜。
 //
 // 打开方式（满足其一即可）：环境变量 LINGWU_TRACE 非空，
-// 或存在标记文件 %LOCALAPPDATA%\LingwuSysMon\trace.on。
-// 文件写到   %LOCALAPPDATA%\LingwuSysMon\trace.log
+// 或存在标记文件 %LOCALAPPDATA%\LingwuToolbox\trace.on。
+// 文件写到   %LOCALAPPDATA%\LingwuToolbox\trace.log
 // 每次调用追加一行，形如：
 //   2026-10-13 15:04:11.123 [pid=1234 tid=5678] MainWindow ctor: step=1
 //
@@ -35,7 +35,7 @@ inline bool TryGetAppDataDir(char* out, int cap) noexcept {
     return n > 0 && n < static_cast<DWORD>(cap);
 }
 
-// 取 %LOCALAPPDATA%\LingwuSysMon\trace.log
+// 取 %LOCALAPPDATA%\LingwuToolbox\trace.log
 inline void BuildTraceFilePath(char* out, int cap) noexcept {
     char dir[MAX_PATH]{};
     if (!TryGetAppDataDir(dir, static_cast<int>(sizeof(dir)))) {
@@ -48,7 +48,7 @@ inline void BuildTraceFilePath(char* out, int cap) noexcept {
     ::lstrcpynA(out, dir, static_cast<int>(cap));
 }
 
-// 取 %LOCALAPPDATA%\LingwuSysMon\trace.on（标记文件本身，不创建）
+// 取 %LOCALAPPDATA%\LingwuToolbox\trace.on（标记文件本身，不创建）
 inline void BuildTraceFlagPath(char* out, int cap) noexcept {
     char dir[MAX_PATH]{};
     if (!TryGetAppDataDir(dir, static_cast<int>(sizeof(dir)))) {

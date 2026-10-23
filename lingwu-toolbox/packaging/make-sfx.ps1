@@ -21,7 +21,7 @@ param(
     # Three-part release version (e.g. 0.0.1).
     #
     # The release CI passes this in, derived from the git tag
-    # (lingwu-sysmon-vX.Y.Z), so a published artifact can never disagree with the
+    # (lingwu-toolbox-vX.Y.Z), so a published artifact can never disagree with the
     # tag it was published under -- the tag is authoritative for releases, this
     # literal is authoritative for local builds. When the two diverge, the
     # release workflow prints a notice so the stale literal gets updated; it
@@ -34,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 
 # Reject anything that would produce a broken file name / VERSIONINFO block.
 # An unvalidated tag-derived string is the realistic way this goes wrong:
-# a typo'd or annotated tag ("lingwu-sysmon-v1.0", "v1.0.0-rc1") would
+# a typo'd or annotated tag ("lingwu-toolbox-v1.0", "v1.0.0-rc1") would
 # otherwise flow straight into the launcher name and rc.exe FILEVERSION.
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version '$Version' is not a three-part version (expected e.g. 0.0.1)."

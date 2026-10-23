@@ -8,7 +8,7 @@
 // MainWindow.idl. Keep the Chinese text in the .xaml / .cpp files only.
 //
 // The runtimeclass name and namespace must match both the XAML x:Class
-// attribute and $(RootNamespace) in LingwuSysmon.vcxproj, or the XAML
+// attribute and $(RootNamespace) in LingwuToolbox.vcxproj, or the XAML
 // compiler fails with WMC1002.
 //
 // Why a separate Window instead of a ContentDialog:

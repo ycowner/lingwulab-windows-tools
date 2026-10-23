@@ -322,7 +322,7 @@ namespace winrt::LingwuToolbox::factory_implementation {
 struct ProcessRow : ProcessRowT<ProcessRow, implementation::ProcessRow> {};
 }  // namespace winrt::LingwuToolbox::factory_implementation
 
-// 注意：winrt_make_LingwuSysmon_ProcessRow 与投影类默认构造函数定义在
+// 注意：winrt_make_LingwuToolbox_ProcessRow 与投影类默认构造函数定义在
 // cppwinrt 生成的 ProcessRow.g.cpp 里，**不要**在这里 include 它。
 // 本头会被多个 TU 包含（经 pch.h → MainWindow.g.h → … 的链条），
 // 放这里会得到 LNK2005「已经在此 .obj 中定义」。接线放在 process_row_glue.cpp。

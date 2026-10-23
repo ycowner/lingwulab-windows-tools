@@ -1,29 +1,42 @@
-# 零物性能监视器（v0.0.1）
+# 零物工具箱（v0.0.1）
 
-一个常驻托盘的 Windows 系统监控小工具：进程 / 应用的 CPU、内存、网络实时占用，一键结束任务。
+一个常驻托盘的 Windows 系统小工具，两个模块共用一个窗口：
+
+- **性能监视** —— 进程 / 应用的 CPU、内存、网络实时占用，一键结束任务
+- **服务管理** —— Windows 服务的列表、详情、启停 / 重启、启动类型切换、创建、删除
+
 **实现栈为 C++/WinRT + WinUI 3**，unpackaged 自包含分发，双击即用。
 
 - 目标平台：Windows 10 1809 (17763) 及以上；Win11 专属能力（Mica、圆角、系统背板）按版本运行时门控
 - 部署方式：unpackaged + Windows App SDK 框架依赖部署，无需安装、不写注册表（自启动项除外）
-- 体积：exe 0.60 MB，`dist\Release\` 合计 0.98 MB
-- 常驻内存（私有提交，本机 ~490 进程、Win11 26H2、200% DPI，2026-10-14 实测）：
+- 体积：exe 1.13 MB（1,182,208 字节），`dist\Release\` 合计 62 MB —— 其中 60 MB 是随包分发的
+  WinUI 3 框架依赖（`Microsoft.UI.Xaml.dll` 等），不是应用代码
+- **权限模型：整个程序默认以管理员身份运行**（manifest 声明 `requireAdministrator`）。
+  服务管理模块要启停 / 删除服务，没有管理员权限根本列不全。
+  **代价**：开机自启拉起时 Windows 会弹一次 UAC —— 这是提权模型的必然结果，不是 bug。
+  UAC 弹在应用起来之前，所以用户先看到 UAC 确认框、确认后才看到托盘图标。
+- 常驻内存（私有提交，本机 ~490 进程、345 个服务、Win11 26H2、200% DPI，
+  2026-10-24 用 `tools/common/mem-baseline.ps1` 五个场景实测）：
 
-  | 场景 | 私有内存 | 说明 |
-  |---|---|---|
-  | 静止（不隐藏窗口） | **130.6 MB** | 红线内 |
-  | 最小化-还原 5 轮 | 135.8 MB | 每轮约 +1.0 MB |
-  | 隐藏-显示 5 轮（弹确认框） | 144.0 MB | 每轮约 +3.0 MB，对话框是大头 |
-  | 隐藏-显示 20 轮（不弹框，加暂停刷新后） | **139.0 MB** | 每轮约 +0.42 MB，尾部跨度 1.2 MB |
+  | 场景 | 私有内存 | 工作集 | 说明 |
+  |---|---|---|---|
+  | 只开性能页 | 107.0 MB | 161.8 MB | 单页基线 |
+  | 只开服务页 | 113.8 MB | 167.4 MB | 单页基线 |
+  | **两页都实现过（工具箱的正常工作状态）** | **197.4 MB** | **249.3 MB** | 稳态 |
+  | 加上设置窗口开合 + 托盘常驻 | **201.3 MB** | **251.5 MB** | 全场景峰值 |
 
-  红线 **~145 MB**（2026-10-14 由 ~132 上调），判定只卡私有内存；工作集含
-  Windows App Runtime 框架 DLL 的跨进程共享页，不计入红线（见「数据口径」）。
-  **真隐藏不比最小化贵**（0.42 vs 1.0 MB/轮），所以上调红线不是为迁就更贵的实现 ——
-  旧的「点 X 最小化」同样会越 132 MB 那条线，只是当时没测。
-  详见 AGENTS.md「隐藏 / 显示窗口的内存代价」。
+  **没有泄漏**：切页 60 轮，私有内存按阶段五等分的涨幅是
+  **11.3 / 34.3 / 1.9 / −0.5 / 0.1 MB** —— 后 3/5 完全走平，
+  涨幅全在头两个五分之一里（其中一次是 +26 MB 的一次性框架预热阶跃），
+  句柄数 967 → 953 反而降了。
+
+  红线判定**只卡私有内存**；工作集含 Windows App Runtime 框架 DLL 的
+  跨进程共享页，不计入红线（见「数据口径」）。
+  详见 AGENTS.md「内存红线与基线」。
 
 ## 功能
 
-**主界面**
+### 性能监视
 
 - 列表四列：名称 / CPU / 内存 / 进程数。名称列展示为 `exe名（描述）`，如 `chrome（Google Chrome）`
 - 两种口径随时切换：
@@ -39,30 +52,61 @@
   | CPU ↑（低→高） | CPU 列箭头朝上 |
   | 名称 A→Z | 名称列箭头朝上 |
 
-- 搜索框按进程名 / 应用名实时过滤，状态栏同步显示「筛选出 N 个进程 / M 个应用」
+- 搜索框按进程名 / 应用名实时过滤，状态栏同步显示「N 进程 · M 应用」
 - 状态栏右侧常驻：内存口径说明、下行 / 上行网速、参与统计的网卡名
 - 右键列表行 → 「结束任务」：先发 `WM_CLOSE` 优雅退出，最多等 3 秒，仍活着的才强杀；
   权限不足时会提示需要管理员权限
 - 深色 / 浅色主题跟随系统，Mica 背景与圆角在 Win11 上自动生效
 
-**托盘**
+### 服务管理
+
+| 能力 | 说明 |
+|---|---|
+| 服务列表 | 默认显示全部服务（含已停止、已禁用），与服务管理器一致 |
+| 搜索 | 按服务名或显示名筛选，大小写无关的**子串**匹配 |
+| 状态筛选 | 全部 / 运行中 / 已停止 / 已禁用 / 第三方 |
+| 排序 | 名称、状态、启动类型三列，**每列都可双向排序**，表头箭头指示方向 |
+| 详情面板 | 可执行路径、运行账户、描述、依赖服务、退出代码。默认折叠，点标题展开 |
+| 启动 / 停止 / 重启 | 单个服务，带等待态（不会点了没反应） |
+| 启动类型切换 | 自动 / 自动（延迟启动）/ 手动 / 禁用 |
+| 创建服务 | 服务名、显示名、描述、可执行路径、启动类型、运行账户、创建后立即启动 |
+| 删除服务 | 分级确认：自家服务直接删；第三方服务且已停止时要求逐字输入服务名；运行中走「停止并删除」 |
+
+**已知不支持**（有意为之，不是缺陷）：
+
+- 自定义运行账户与密码 —— 只支持 `LocalSystem` / `LocalService` / `NetworkService` 三个内置账户。自定义账户需要用 `lpPassword` 把明文密码交给 SCM，本工具不这么做
+- 依赖服务多选 —— `lpDependencies` 恒为 `nullptr`
+- 驱动服务 —— 只列 Win32 服务（`SERVICE_WIN32`），不含内核驱动
+- 服务恢复策略（失败后重启等）—— 只有 `services.msc` 的「恢复」标签页能做，不在本工具范围
+
+### 托盘
 
 - 左键单击：唤出 / 还原主界面
-- 右键菜单五项：显示主界面、按应用聚合（带勾选态）、设置…、重新添加托盘图标、退出
+- 右键菜单五项：
+
+  ```
+  显示工具箱
+  ─────────
+  ✓ 性能监视          ← 切到性能监视页（当前页带勾选态）
+    服务管理          ← 切到服务管理页
+    设置…             ← 打开设置窗口
+  ─────────
+    退出
+  ```
+
 - Win11 默认把新图标收进任务栏 `^` 溢出区，首次运行会弹一次性气泡提示告诉用户去哪儿找
 - Explorer 重启后自动重新注册托盘图标（`TaskbarCreated` 广播）
 
-**生命周期**
+### 生命周期
 
-- 点标题栏 `X`（或按 `Alt+F4`）= 弹确认框，在「最小化到托盘」与「退出程序」之间选；
-  框里可勾「记住我的选择，以后不再询问」，勾了之后点 `X` 直接执行、不再询问
-- 「最小化到托盘」是**真隐藏**：任务栏不留按钮，只剩托盘一个入口；
+- 点标题栏 `X`（或按 `Alt+F4`）= 按「关闭窗口时」的设置行事（见下）
+- 「隐藏到托盘」是**真隐藏**：任务栏不留按钮，只剩托盘一个入口；
   程序继续在后台采样，托盘左键可把它唤回
 - 托盘右键菜单「退出」保持一键直接退出，不弹确认框
 - 开机自启动 = 登录后静默进托盘，不弹主界面（命令行开关 `--autostart`）
 - 单实例：第二份启动会把第一份的窗口叫出来，然后自己退出
 
-**设置**（4 项）
+### 设置
 
 | 设置项 | 取值 | 生效方式 |
 |---|---|---|
@@ -70,14 +114,24 @@
 | 默认排序 | 内存 ↓ / 内存 ↑ / CPU ↓ / CPU ↑ / 名称 ↑ | 确定后立即生效 |
 | 采样间隔 | 0.5 / 1 / 2 / 5 秒 | 确定后下一周期生效 |
 | 开机自启动 | 开 / 关 | 确定后写 / 删 `HKCU\...\Run` |
+| 关闭窗口时 | 每次询问 / 总是隐藏到托盘 / 总是退出程序 | 确定后立即生效 |
 
-设置保存在 `%APPDATA%\LingwuSysMon\settings.ini`，段头固定为 `[Settings]`。
+设置窗口标题栏右侧还有一个动作按钮：**重新添加托盘图标**（托盘图标被清理软件弄丢时的补救）。
+
+设置保存在 `%APPDATA%\LingwuToolbox\settings.ini`，段头固定为 `[Settings]`。
 自启动**不落 ini** —— 注册表是唯一事实源。
 
-### 关闭窗口时的行为（`CloseAction`）
+合并前两个工具各写各的 ini，两个都叫 `SortMode`，语义却完全无关 —— 合进同一份 ini 后
+后写入的一方会把另一方覆盖掉。所以键名带模块前缀：
+`MonitorAggregate` / `MonitorSortMode` / `MonitorIntervalMs` /
+`ServiceSortMode` / `ServiceFilterMode` / `ServiceDetailExpanded` /
+`TrayHintShown` / `WindowLeft` / `WindowTop` / `WindowWidth` / `WindowHeight` /
+`CloseAction`。
 
-关闭确认框里那个「记住我的选择，以后不再询问」复选框勾上之后，
-选择会写进 ini 的 `CloseAction`：
+旧路径 `%APPDATA%\LingwuSysMon\settings.ini` 与 `%APPDATA%\LingwuServiceManager\settings.ini`
+只**读**，用于一次性迁移，保留不删。
+
+### 关闭窗口时的行为（`CloseAction`）
 
 | 值 | 含义 |
 |---|---|
@@ -85,11 +139,11 @@
 | `1` | 总是隐藏到托盘 |
 | `2` | 总是退出程序 |
 
+「每次询问」时弹确认框，框里可勾「记住我的选择，以后不再询问」，勾了之后点 `X` 直接执行、
+不再询问。**三档在设置窗口的「关闭窗口时」下拉里都能选**（早期版本只能手改 ini 改回 0）。
+
 手改 ini 写出越界值时，`LoadSettings` 会收敛回 `0`（宁可多问一次，
 也不要给出一个 `MainWindow` 里没有对应分支的值）。
-
-**已知缺口**：设成 `1` 或 `2` 之后**没有 UI 入口能改回 `0`**，
-只能手改这个文件把 `CloseAction` 置 0。
 
 ## 构建
 
@@ -97,77 +151,100 @@
 build.bat
 ```
 
-产物在 `dist\Release\LingwuSysmon.exe`。脚本通过 `vswhere` 定位 MSVC BuildTools，缺依赖时不要自己拼 `cl` 命令行。
+产物在 `dist\Release\LingwuToolbox.exe`。脚本通过 `vswhere` 定位 MSVC BuildTools，缺依赖时不要自己拼 `cl` 命令行。
 
-`dist\Release\` 下共 7 个文件，其中 3 个 `.xbf` 落在 `Release\src\ui\` 子目录
-（XAML 编译产物按源文件相对路径镜像，不是平铺的）。
-**部署只需拷 `Release\` 根目录那 4 个**：`LingwuSysmon.exe`、`LingwuSysmon.pri`、
-`LingwuSysmon.winmd`、`Microsoft.WindowsAppRuntime.Bootstrap.dll`。
-XAML 资源走 `.pri` 索引，`.xbf` 只是编译中间物，不参与运行期加载 ——
-实测从 `Release\` 单独启动，列表 / 设置窗口 / 托盘全部正常。
+`dist\Release\` 是**自包含**产物：exe + `.pri` / `.winmd` + Windows App Runtime 的框架 DLL
+与语言资源（约 250 个文件 / 60 MB）。XAML 资源走 `.pri` 索引，`.xbf` 只是编译中间物，
+不参与运行期加载。
 
 依赖：VS 2026 BuildTools（MSVC 14.51）、Windows App SDK 2.5.1、NuGet 包
 `Microsoft.WindowsAppSDK 2.5.1` + `CppWinRT 3.0.260818.1`（`build.bat` 带 `-restore` 自动拉）。
-WinUI 3 工作流缺失时先跑 `tools\install-winui-workload.ps1`。
+WinUI 3 工作流缺失时先跑 `tools\build\install-winui-workload.ps1`。
 
 改完必须**跑一次 `build.bat` 并确认零错误零警告**（`/W3 /WX`）。
 
 ## 运行
 
 ```bat
-dist\Release\LingwuSysmon.exe              # 正常启动，显示主界面
-dist\Release\LingwuSysmon.exe --autostart   # 静默进托盘（开机自启动用的就是这条）
-dist\Release\LingwuSysmon.exe --show        # 强制显示（提权重启路径用）
-dist\Release\LingwuSysmon.exe --selftest    # 只跑数据层自检，不起 XAML、不建窗口
+dist\Release\LingwuToolbox.exe              # 正常启动，显示主界面
+dist\Release\LingwuToolbox.exe --autostart   # 静默进托盘（开机自启动用的就是这条）
+dist\Release\LingwuToolbox.exe --show        # 强制显示
+dist\Release\LingwuToolbox.exe --selftest    # 只跑数据层自检，不起 XAML、不建窗口
 ```
 
-`--selftest` 不初始化 COM、不拉 XAML 框架，用来验证数据层可独立运行。退出码非 0 即自检失败。
+`--selftest` 不初始化 COM、不拉 XAML 框架，用来验证数据层可独立运行
+（性能监视 + 服务管理两套断言）。退出码非 0 即自检失败。
 
 ## 目录结构
 
 ```
-lingwu-sysmon/
+lingwu-toolbox/
 ├── build.bat                   # MSBuild 入口（纯 ASCII + CRLF）
-├── LingwuSysmon.vcxproj        # 工程文件（/MT 静态 CRT、/WX、/utf-8）
+├── LingwuToolbox.vcxproj       # 工程文件（/MT 静态 CRT、/WX、/utf-8）
 ├── XamlMetaDataProvider.idl    # XAML 类型信息（纯 ASCII）
 ├── resources/
 │   ├── app.rc                  # 图标资源 + 版本信息
-│   ├── app.manifest            # PerMonitorV2、UTF-8 代码页、supportedOS
+│   ├── app.manifest            # PerMonitorV2、UTF-8 代码页、supportedOS、requireAdministrator
 │   └── app.ico
 ├── src/
 │   ├── pch.h / pch.cpp         # 预编译头
 │   ├── main.cpp                # 入口、单实例、启动方式、Application::Start
 │   ├── core/                   # 数据层（不依赖任何 UI 框架，可独立自检）
-│   │   ├── sampler.h/.cpp      # 采样线程：进程 CPU/内存、网卡速率
-│   │   ├── metrics.h           # 数据模型、SortMode 枚举、格式化
-│   │   ├── settings.h/.cpp     # ini 读写（路径 / 段头 / 键名是对外契约）
-│   │   ├── autostart.h/.cpp    # 注册表自启动 + 启动方式解析
-│   │   ├── appnames.h/.cpp     # exe → 桌面显示名解析（两级缓存）
-│   │   ├── terminate.h/.cpp    # 结束进程三段式
-│   │   ├── top10.h/.cpp        #  Top10 内存口径计算
-│   │   └── selftest.h/.cpp     # 数据层自检
+│   │   ├── monitor/            # 性能监视
+│   │   │   ├── sampler.h/.cpp    # 采样线程：进程 CPU/内存、网卡速率
+│   │   │   ├── metrics.h         # 数据模型、SortMode 枚举、格式化
+│   │   │   ├── appnames.h/.cpp   # exe → 桌面显示名解析（两级缓存）
+│   │   │   ├── terminate.h/.cpp  # 结束进程三段式
+│   │   │   ├── top10.h/.cpp      # Top10 内存口径计算
+│   │   │   ├── autostart.h/.cpp  # 注册表自启动 + 启动方式解析
+│   │   │   └── selftest.h/.cpp   # 数据层自检
+│   │   ├── service/            # 服务管理
+│   │   │   ├── service_model.h   # 纯函数与数据结构（文案、判定、排序枚举）
+│   │   │   ├── scm.h/.cpp        # SCM 原始调用层（本层只做 API→错误码）
+│   │   │   ├── controller.h/.cpp # poll 线程 + op 线程 + 队列
+│   │   │   └── selftest.h/.cpp   # 数据层自检
+│   │   ├── settings.h/.cpp      # 两边共用的 ini 读写（路径 / 段头 / 键名是对外契约）
+│   │   └── selftest.h/.cpp      # --selftest 的统一入口
 │   ├── platform/               # 纯 Win32 层
 │   │   ├── trace.h             # 标记文件诊断 trace
 │   │   ├── window_decor.h/.cpp # Win11 窗口装饰的版本门控
-│   │   └── tray_icon.h/.cpp    # 托盘图标、单实例、消息窗口宿主
+│   │   ├── callback_guard.h    # Win32 回调边界的异常兜底
+│   │   ├── single_instance.h/.cpp # 单实例（共享内存存 HWND）
+│   │   └── tray_icon.h/.cpp    # 托盘图标、消息窗口宿主
 │   └── ui/                     # WinUI 3 层
-│       ├── App.xaml / .idl / .h / .cpp
-│       ├── MainWindow.xaml / .idl / .h / .cpp
+│       ├── App.xaml / .h / .cpp
+│       ├── MainWindow.xaml / .idl / .h / .cpp   # 外壳：标题栏 + 导航 + 页面宿主
+│       ├── MonitorPage.xaml / .idl / .h / .cpp   # 性能监视页
+│       ├── ServicePage.xaml / .idl / .h / .cpp   # 服务管理页
 │       ├── SettingsWindow.xaml / .idl / .h / .cpp
+│       ├── CreateServiceWindow.xaml / .idl / .h / .cpp
 │       ├── ProcessRow.idl / .h     # 行数据 + INPC + ICustomPropertyProvider
+│       ├── ServiceRow.idl / .h     # 同上（服务侧）
 │       ├── process_row_glue.cpp    # 循环依赖破解的自由函数
+│       ├── service_row_glue.cpp
 │       └── xaml_typeinfo.cpp       # XAML 元数据（显式关 /WX）
 ├── dist/
-│   ├── Release/                  # 自包含产物：250 个文件 / 60.1 MB（见「分发」）
-│   └── package/                  # 分发件：单文件 exe 60.3 MB / zip 22.8 MB
+│   ├── Release/                  # 自包含产物：约 250 个文件 / 62 MB
+│   └── package/                  # 分发件：单文件 exe 60.7 MB
 ├── packaging/                    # 单文件自解压壳
 │   ├── sfx_main.cpp              # 释放逻辑（自定义 LSFX v1 负载格式）
 │   ├── make-sfx.ps1              # 打包 dist\Release + 生成 sfx.rc
 │   └── build-sfx.bat             # rc / cl / link（纯 ASCII）
-└── tools/                        # 20 个 UIA 实测脚本
+├── tools/                        # 验收脚本（common / monitor / service / build）
+│   ├── common/                   # 跨模块共享件
+│   │   ├── common.ps1            #   提权自举 + exe 解析 + 进程启停
+│   │   ├── uia.ps1               #   UIA 辅助件
+│   │   ├── tray.ps1              #   托盘图标查找（可见区 + ^ 溢出浮窗，开了会关回去）
+│   │   └── mem-baseline.ps1      #   内存红线基线（五个场景长跑）
+│   ├── monitor/                  # 性能监视侧验收脚本
+│   ├── service/                  # 服务管理侧验收脚本
+│   └── build/                    # 构建工具（make-icon / install-winui-workload）
+└── AGENTS.md                     # 给 AI agent 的硬约束与踩坑清单
 ```
 
 ## 数据口径
+
+**性能监视**
 
 | 指标 | 口径 |
 |---|---|
@@ -177,6 +254,15 @@ lingwu-sysmon/
 | 进程身份 | PID 复用靠 `createTime` 区分，避免把新进程当成旧进程累计 CPU |
 
 网卡枚举有节流，PDH 不可用时内存口径退化为私有提交（状态栏会注明）。
+
+**服务管理**
+
+| 指标 | 口径 |
+|---|---|
+| 服务集合 | 只列 Win32 服务（`SERVICE_WIN32`），不含内核驱动；枚举不按状态过滤（`SERVICE_STATE_ALL`） |
+| 枚举方式 | `EnumServicesStatusW` 分页 + 对运行中的服务逐个 `QueryServiceStatusEx(SC_STATUS_PROCESS_INFO)` 取 PID / 标志 |
+| 启动类型 | 每服务一次 `QueryServiceConfigW`，2 KB 起步、翻倍封顶 8 KB；首次约 345 次 RPC，稳态命中缓存为 0 次 |
+| 权限状态 | 状态栏右侧显示「管理员权限 / 标准用户权限」。工具箱恒为管理员 |
 
 ## 实现要点与踩坑记录
 
@@ -216,7 +302,7 @@ XAML 框架已加载，但**一个窗口都没有**，不崩溃、不写事件�
 ### 3. `ICustomPropertyProvider::Type()` 写成 `Primitive` / `"String"` 会崩
 
 那是 `ICustomProperty::Type()`（属性级）的写法。`ICustomPropertyProvider::Type()`
-描述的是**源对象本身**，必须是 `TypeKind::Metadata` + 真实运行时类名（`L"LingwuSysmon.ProcessRow"`）。
+描述的是**源对象本身**，必须是 `TypeKind::Metadata` + 真实运行时类名（`L"LingwuToolbox.ProcessRow"`）。
 
 写错的表现：启动数秒后进程以 `0xc000027b (STATUS_STOWED_EXCEPTION)` 崩在
 `Microsoft.UI.Xaml.dll`，无托管异常、事件日志看不出成因。
@@ -264,7 +350,7 @@ XAML 框架已加载，但**一个窗口都没有**，不崩溃、不写事件�
 
 症状与定位：
 
-- 事件日志（`Application` / Id=1000）里故障模块名是 `LingwuSysmon.exe`，偏移地址每轮都不同。
+- 事件日志（`Application` / Id=1000）里故障模块名是 `LingwuToolbox.exe`，偏移地址每轮都不同。
 - 用 map + PDB 双向符号化后，4 次的崩溃点全落在
   `RowCustomProperty::GetValue`（`+0x10C` / `+0xC9` / `+0x184`），
   另一次崩在 `memcpy+0xC6`（下游：拿到垃圾 HSTRING 后复制踩空）。
@@ -285,7 +371,7 @@ XAML 框架已加载，但**一个窗口都没有**，不崩溃、不写事件�
   节流后 `SetAt` 每 3 秒一次、绑定又跨多个应用周期存活，**第 4 例崩溃依然复现**。
 
 正解：`GetValue` **改用引擎传进来的 `target` 参数取行** ——
-QI 到投影类型 `winrt::LingwuSysmon::ProcessRow`，**一个行指针都不存**。
+QI 到投影类型 `winrt::LingwuToolbox::ProcessRow`，**一个行指针都不存**。
 对象活着才可能被传进来，传进来就一定活着。`target` 为空就返回 null，
 下一帧自愈，不崩。`MakeRowCustomProperty` 的参数随之从 `(ProcessRow*, RowProp)`
 简化成 `(RowProp)`，循环依赖解除，只保留函数前向声明。
@@ -448,10 +534,11 @@ tlog 跨构建累积）；`.map` 的 Static symbols 段出现 `msvcprt:MSVCP140.
   MSBuild 日志是 GBK，要 `[System.Text.Encoding]::GetEncoding(936)` 读
 - 控制台代码页会把中文吞掉，trace 落盘用 `WideCharToMultiByte(CP_UTF8)` + `WriteFile`
 
-### 18. `core/metrics.h` 才有 `SortMode` 枚举
+### 18. `core/monitor/metrics.h` 才有 `SortMode` 枚举
 
-`core/settings.h` 没有。用 `SORT_*` 的文件必须 include `core/metrics.h`
-并加 `namespace core = lingsysmon::core;`。
+`core/settings.h` 没有（它只有读 ini 用的那个 `MonitorSortMode` 键）。
+用 `SORT_*` 的文件必须 include `core/monitor/metrics.h`
+并加 `namespace core = lingwu::core::monitor;`。
 
 ### 19. 内存阶跃不是泄漏，且真正的变量是「槽位换行」不是 `SetAt` 次数
 
@@ -509,9 +596,9 @@ WinUI 3 列表类界面常出现一次性 +26 MB 的**阶跃**，之后长时间
 ### 21. 诊断开关用标记文件，不要用环境变量
 
 非交互 shell 里 `$env:` 设的变量**传不到** `Start-Process` 起的子进程，会得到
-「开关没生效」的假象。用 `%LOCALAPPDATA%\LingwuSysMon\<name>.on` 这种存在即开的标记。
+「开关没生效」的假象。用 `%LOCALAPPDATA%\LingwuToolbox\<name>.on` 这种存在即开的标记。
 
-目前只实现了一个：`trace.on`（存在即写 `%LOCALAPPDATA%\LingwuSysMon\trace.log`）。
+目前只实现了一个：`trace.on`（存在即写 `%LOCALAPPDATA%\LingwuToolbox\trace.log`）。
 **不要凭猜测假设还有别的标记** —— 例如 `nolist.on`（关掉列表绑定做 A/B 对照）
 **没有实现**，曾经因此白跑一轮 180 秒观测。
 
@@ -564,10 +651,10 @@ AppWindow().MoveAndResize(RectInt32{
 **现场**：事件日志（Application / EventId 1000）只有一条
 
 ```
-LingwuSysmon.exe  异常 0xC0000409  偏移 0x3f739
+LingwuToolbox.exe  异常 0xC0000409  偏移 0x3f739
 ```
 
-用 `build/obj/Release/LingwuSysmon.map` 符号化：`0x14003f739` = `abort`
+用 `build/obj/Release/LingwuToolbox.map` 符号化：`0x14003f739` = `abort`
 （VA `0x14003f704`）+ `0x35` —— 确证是 **CRT `std::terminate` 路径**
 （`abort` → `__fastfail(FAST_FAIL_FATAL_APP_EXIT)`），**不是随机内存破坏**。
 
@@ -609,13 +696,116 @@ LingwuSysmon.exe  异常 0xC0000409  偏移 0x3f739
 `DispatcherQueueTimer` 上，见 `ApplyPendingSettingsResult`），
 并用一个 `settingsResultConsumed_` 标志防止每 100 ms 重复应用一次。
 
-**为什么这个 bug 一直没被发现**：既有的 `tools/uisettings.ps1` 只**打开一次**
+**为什么这个 bug 一直没被发现**：既有的 `tools/monitor/settings.ps1` 只**打开一次**
 设置窗口就关闭、**从不重开** —— 而「第二次打开」正是唯一的崩溃触发条件。
-现在补了 `tools/uisettings2.ps1` 专门覆盖「开 → 关 → 再开」这条路径。
+现在补了 `tools/monitor/settings-reopen.ps1` 专门覆盖「开 → 关 → 再开」这条路径。
+
+### 25. 托盘图标的名字是 Explorer「首次登记时」的 tooltip，可能过期
+
+Explorer 按 `(exe 路径, uid)` 给托盘图标建一条登记项，`InitialTooltip` **只在第一次
+登记时写一次**，之后应用再怎么改 tip 都不刷新。
+
+实测这台机器上，合并前的构建在 `dist\Release\LingwuToolbox.exe` 与
+`build\unelevated\...` 两个路径下各留了一条登记项，tip 还是 **「Lingwu SysMon · 系统监控」**。
+于是 `Shell_TrayWnd` 里那个 `SystemTray.NormalButton` 的 UIA Name 显示的是**旧名**，
+按当前 tip 精确匹配的 `Find-TrayButton` 一律返回 null —— 表现成「托盘图标没了」，
+其实图标好好地在那儿，托盘菜单也能弹。
+
+**按产品前缀匹配（`-like '*Lingwu*'`），不要匹配精确 tip。**
+清理办法：删掉 `HKCU\Control Panel\NotifyIconSettings` 下 `ExecutablePath`
+指向本仓库路径的那几条登记项，下次 `NIM_ADD` 会用新 tip 重建。
+
+（Win11 默认把图标收进 ^ 溢出区，溢出浮窗是另一个顶层窗口
+`TopLevelWindowForOverflowXamlIsland`。应用可以写 `IsPromoted` 字段求提升，
+但**依赖 Explorer 先建好那条登记项** —— 实测这台机器上 Explorer 压根不建，
+所以图标**就是留在溢出区里**，验收脚本必须两条路都能走：
+`tools/common/tray.ps1` 会先查可见区，找不到就**用 UIA Invoke 点开溢出浮窗**再找，
+并且**把浮窗关回去**。）
+
+### 26. 改了产品命名必须重编，否则验收全打在旧二进制上
+
+Phase 5 那次「产品命名同步」改了 `app.rc` 的 `ProductName` / AUMID **和**托盘 tip，
+但 `dist\Release\LingwuToolbox.exe` 还是 12 分钟前构建的那份。于是托盘相关的验收
+全在测**旧契约**（旧菜单项、旧 tip），症状是「改了托盘菜单但界面没变」。
+
+**判据：验收前先确认 `dist\Release\LingwuToolbox.exe` 的时间戳比源码新。**
+想确认二进制里到底有没有某个字符串，直接在 exe 里搜 UTF-16 字节 ——
+比读源码可靠，因为源码可能已经不是构建时的那份。
+
+### 27. PowerShell 函数自调用 = 无限递归，而且不报错
+
+`Wait-TrayButton` 的循环体里写 `Wait-TrayButton`（而不是 `Find-TrayButton`）会无限递归：
+既不抛异常也不超时，脚本表现为「卡住不动」，很容易被误判成环境问题
+（合成点击不可信、UIA 跨进程不可见……）。这个笔误从迁移前就在，因为每次跑它都先被
+更早的 exe 路径问题挡住，所以从没暴露过。
+
+**脚本卡住时先 grep 一遍自己有没有函数自调用，不要急着归咎于环境。**
+
+### 28. 托盘图标可能在「可见区」也可能在「^ 溢出浮窗」里
+
+Win11 把新托盘图标默认收进 ^ 溢出区。溢出浮窗是**另一个顶层窗口**
+（`TopLevelWindowForOverflowXamlIsland`），**只有打开时它的条目才在 UIA 树里**。
+应用只能靠写 `HKCU\Control Panel\NotifyIconSettings` 下的 `IsPromoted` 这个未公开字段
+求提升，而 Explorer 建那条登记项是**异步**的，且不是每台机器都建（实测这台机器不建）。
+
+所以**只查 `Shell_TrayWnd` 会把「图标在那儿」报成「图标没了」**。
+共享件 `tools/common/tray.ps1` 两条路都走：先查可见区，找不到就用 UIA Invoke
+点开溢出浮窗再找，**并且把浮窗关回去**（实测点两下 chevron 就能开关）。
+
+浮窗里的图标**是有屏幕矩形的**（实测 80×80 @ 3067,1710），但那个矩形
+**只在浮窗打开期间有效** —— 浮窗一关，元素跟着浮窗一起死，
+`BoundingRectangle` 变成 NaN/∞，`[int]` 转换直接抛异常。
+要按坐标点它，就得让浮窗保持打开，点完再关
+（`Get-ToolboxTrayState -KeepOpen`）。
+
+### 29. `GetCurrentPattern` 要的是 `AutomationPattern` 实例，不是类型
+
+```powershell
+$ip = [System.Windows.Automation.InvokePattern]              # 错：这是类型
+$ip = [System.Windows.Automation.InvokePattern]::Pattern     # 对：这是实例
+```
+
+传错会抛「无法将类型 System.Windows.Automation.InvokePattern 转换为类型
+System.Windows.Automation.AutomationPattern」。
+
+这个坑特别坑，因为它**只在第一次真的 Invoke 的时候才炸** ——
+共享件里「打开溢出浮窗」这一步直接抛异常，脚本当场退出，
+而报出来的错跟「托盘图标为什么找不到」毫无关系。
+
+### 30. 「环境跑不了」要报 SKIP，不能报 FAIL
+
+`monitor/tray-click.ps1` 依赖 `SendInput` 合成鼠标点击，本机点不动 shell 的
+XAML island 托盘（点了没有任何弹出菜单）。那是**环境限制，不是产品缺陷**，
+报 FAIL 会把验收板染红并误导后续判断。
+
+判据是「点完有没有弹出菜单」：弹出了就继续验菜单内容，
+没弹出就输出 `SKIP: ...` 并以 0 退出。
+
+**验收脚本的三类标记约定**（整轮运行器按它统计）：
+
+| 标记 | 含义 |
+|---|---|
+| `[PASS]` / `[FAIL]` | 断言结果 |
+| `SKIP:` | 这一项**本机跑不了**（环境限制），既不算 pass 也不算 fail |
+| `RESULT: pass=N fail=M` | 结尾汇总行，`fail>0` 时退出码为 1 |
+
+同理：某个脚本因为「本机没有管理员权限」跑不了，也要单独标出来，别混进 FAIL 里。
+
+### 31. 共享 API 的返回类型一改，所有调用点都要一起改
+
+把「找 UIA 元素」改成「问在不在」（返回 bool）之后，只改一半的话，
+调用点会变成 `$tray.GetCurrentPattern(...)`，在 `[System.Boolean]` 上抛
+「Method invocation failed because [System.Boolean] does not contain a method
+named 'GetCurrentPattern'」，而 `$ErrorActionPreference = 'Stop'` 会让脚本当场退出。
+
+同一个坑还有断言：旧写法 `$null -eq (Find-TrayButton)` 在函数改成返回 bool 之后
+**恒为 false**，于是「托盘图标已撤销」这类断言永远失败，而且是**静默地**失败。
+
+**改动共享 API 的返回类型时，把所有调用点 grep 一遍再跑。**
 
 ## 版本号
 
-**当前版本：v0.0.1**（2026-10-14）。这是本项目的**唯一版本**，往前没有别的版本。
+**当前版本：v0.0.1**（2026-10-23 合并成工具箱）。这是本项目的**唯一版本**，往前没有别的版本。
 
 版本号出现在 4 个地方，必须一起改。前三处是**元数据可见**的：
 
@@ -640,8 +830,8 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1 -Version 0.1.0
 参数必须是三段式（`X.Y.Z`），否则脚本会立即抛出并中止——tag 写错时
 不会流进壳的文件名或 `FILEVERSION`。
 
-**发布时版本由 tag 决定，不由脚本默认值决定。** `release-sysmon.yml` 从
-tag `lingwu-sysmon-vX.Y.Z` 解析出版本号再用 `-Version` 注入，所以产物
+**发布时版本由 tag 决定，不由脚本默认值决定。** `.github/workflows/release-toolbox.yml`
+从 tag `lingwu-toolbox-vX.Y.Z` 解析出版本号再用 `-Version` 注入，所以产物
 不可能和它所在的 tag 对不上。工作流收尾时会比对脚本默认值与 tag，不一致
 就打 warning 提醒你更新——但不会因此让发版失败。详见根目录 README 的
 「发布」一节。
@@ -651,26 +841,21 @@ tag `lingwu-sysmon-vX.Y.Z` 解析出版本号再用 `-Version` 注入，所以�
 
 ## 分发
 
-程序是未打包（unpackaged）WinUI 3 应用。分发形态由 `LingwuSysmon.vcxproj` 的
+程序是未打包（unpackaged）WinUI 3 应用。分发形态由 `LingwuToolbox.vcxproj` 的
 `WindowsAppSDKSelfContained` 决定，**两种模式的可用文件集完全不同**。
 
 ### 默认：自包含（免安装，发给别人用）
 
-`WindowsAppSDKSelfContained = true`（`LingwuSysmon.vcxproj` 顶部，已是默认值）。
+`WindowsAppSDKSelfContained = true`（`LingwuToolbox.vcxproj` 顶部，已是默认值）。
 
-`dist\Release\` 变成 250 个文件 / 60.1 MB，含全量 Windows App Runtime DLL。
+`dist\Release\` 变成约 250 个文件 / 62 MB，含全量 Windows App Runtime DLL。
 目标机**不需要**预装任何东西，解压即用。
-
-验收证据（实测）：解压到全新目录后启动，19 个运行时模块**全部**从应用目录加载、
-来自 `C:\Program Files\WindowsApps` 框架包的为 **0** 个，UIA 枚举到 355 个界面元素。
 
 打成 zip 分发：
 
 ```
-tar.exe -a -c -f dist\package\LingwuSysmon-0.0.1-win64-portable.zip -C dist Release
+tar.exe -a -c -f dist\package\LingwuToolbox-0.0.1-win64-portable.zip -C dist Release
 ```
-
-实测 60.1 MB → **22.8 MB**（250 个文件，1.7 秒）。
 
 ### 可选：框架依赖（小包，但要求对方先装运行时）
 
@@ -697,7 +882,7 @@ build.bat -p:WindowsAppSDKSelfContained=false
 ### 自包含瘦身
 
 `TrimSelfContainedPayload`（`AfterTargets="Build"`）删除本工程零引用的传递依赖：
-未瘦身前 294 个文件 / 115.9 MB，瘦身后 250 个文件 / 60.1 MB。
+未瘦身前 294 个文件 / 115.9 MB，瘦身后约 250 个文件 / 62 MB。
 最大的两块是 `onnxruntime.dll`（20.66 MB）与 `DirectML.dll`（17.83 MB）。
 
 ⚠ 这里**不能**用官方那个 `MicrosoftWindowsAppSDKFilesExcluded` 扩展点：
@@ -719,20 +904,9 @@ x64，Windows 10 1809（17763）及以上 / Windows 11。
 pwsh -NoProfile -File .\packaging\make-sfx.ps1
 ```
 
-产出 `dist\package\LingwuSysmon-0.0.1-win64.exe`（60.3 MB）。
-把 `dist\Release\` 的 250 个文件按自定义格式嵌成一个 RCDATA 资源，
-双击后释放到 `%LOCALAPPDATA%\LingwuSysMon\portable\<buildId>\` 再启动真程序，壳随即退出。
-
-实测（与 `dist\Release` 完全分离的副本）：
-
-| 检查项 | 结果 |
-|---|---|
-| 首次出窗口（含解压 60 MB） | **4.1 s** |
-| 二次出窗口（标记已存在，跳过解压） | **0.8 s** |
-| UIA 界面元素 | 355（与框架依赖构建一致） |
-| 子目录 | 88 个全部保留（`Assets\` / `src\ui\` / 83 个语言目录） |
-| 运行时模块来源 | 19 个全部来自 portable 目录，框架包 0 个 |
-| 与 `dist\Release` 逐文件 SHA-256 | 250 个文件，0 缺失、0 不一致 |
+产出 `dist\package\LingwuToolbox-0.0.1-win64.exe`（约 60.7 MB）。
+把 `dist\Release\` 的文件按自定义格式嵌成一个 RCDATA 资源，
+双击后释放到 `%LOCALAPPDATA%\LingwuToolbox\portable\<buildId>\` 再启动真程序，壳随即退出。
 
 `buildId` 取自 exe 的 SHA-256 前 8 位并进了目录名，所以重打一次壳会落到新目录，
 不会出现「换了新 exe 却跑旧文件」。每次释放完写一个 `.sfx-ok` 标记，标记在就整段跳过解压。
@@ -747,9 +921,9 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1
 
 ### 两种分发件怎么选
 
-| | `LingwuSysmon-0.0.1-win64.exe` | `...-portable.zip` |
+| | `LingwuToolbox-0.0.1-win64.exe` | `...-portable.zip` |
 |---|---|---|
-| 体积 | 60.3 MB | 22.8 MB |
+| 体积 | 约 60.7 MB | 约 22.8 MB |
 | 对方操作 | 双击即用 | 解压后双击 |
 | 杀软误报风险 | 未签名自解压 exe，可能被拦 | 无 |
 
@@ -757,36 +931,54 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1
 
 ## 验证方法
 
-改完必须实机验证，不能只看编译通过。`tools\` 下 20 个脚本全部走 UI Automation
+改完必须实机验证，不能只看编译通过。`tools\` 下 28 个脚本全部走 UI Automation
 （坐标注入在本机不可靠，UIA 能按 `AutomationId` 定位并读回断言）：
 
 | 脚本 | 验什么 |
 |---|---|
-| `uicheck.ps1` | 排序重排 / 还原、搜索过滤、状态栏、内存采样 |
-| `uisort.ps1` | 五档排序逐档落盘 |
-| `uisettings.ps1` | 设置窗口 4 项控件、确定 / 取消、ini 往返、自启开关只读（测完自动清 ini 备份） |
-| `uisettings2.ps1` | 设置窗口**二次打开**（开→关→再开）+ 反复开关的私有内存（踩坑 24 的回归） |
-| `uiapply.ps1` | 设置应用后运行时生效 |
-| `uimenu.ps1` | 右键上下文菜单 |
-| `trayclick.ps1` | 托盘 7 个场景：右键菜单 / 左键 / X 最小化 / 退出 / 单实例 / 设置 / 聚合 |
-| `closeflow.ps1` | 关闭确认框 T1~T9：弹框 / 取消 / 隐藏 / 唤回 / 退出 / 记忆 / 单实例 / 对话框互斥 / 直隐藏 |
-| `closeab.ps1` | 隐藏-显示的私有内存 A/B（对照 vs 5 轮循环） |
-| `closememab.ps1` | 三组对照：静止 / 最小化-还原 / 真隐藏-显示（定性「隐藏到底贵不贵」） |
-| `closehidedlg.ps1` | 第四组：`CloseAction=1` 隐藏且不弹框，把 Hide 自身与 ContentDialog 的代价拆开 |
-| `repro_close.ps1` | 关闭流程最小复现（自动开 trace 并打印关闭相关日志） |
-| `mem.ps1` | 长时内存观测（默认 180 秒，落 CSV） |
-| `memscroll.ps1` | 滚动后内存是否阶跃 |
-| `shot.ps1` | `PrintWindow` 截图 |
-| `diag.ps1` / `uidump.ps1` | UIA 树转储 |
-| `install-winui-workload.ps1` | 装 WinUI 3 工作流 |
+| `monitor/check.ps1` | 窗口、进程列表、排序、搜索、聚合开关 |
+| `monitor/sort.ps1` | 五档排序逐档落盘 |
+| `monitor/align.ps1` | 表头与数据列右边缘对齐（物理像素） |
+| `monitor/settings.ps1` | 设置窗口控件、确定 / 取消、ini 往返、自启开关只读（测完自动清 ini 备份） |
+| `monitor/settings-reopen.ps1` | 设置窗口**二次打开**（开→关→再开）+ 反复开关的私有内存（踩坑 24 的回归） |
+| `monitor/apply.ps1` | 设置应用后运行时生效 |
+| `monitor/menu.ps1` | 右键上下文菜单 |
+| `monitor/tray-click.ps1` | 托盘 6 个场景：右键菜单 / 左键 / X 最小化 / 退出 / 单实例 / 设置（合成点击，本机点不动 shell，会报 SKIP） |
+| `monitor/tray-invoke.ps1` | 托盘交互，走 UIA `InvokePattern`（**推荐**：不需要坐标，溢出区照样能点） |
+| `monitor/close-flow.ps1` | 关闭确认框 T1~T9：弹框 / 取消 / 隐藏 / 唤回 / 退出 / 记忆 / 单实例 / 对话框互斥 / 直隐藏 |
+| `monitor/close-ab.ps1` | 隐藏-显示的私有内存 A/B（对照 vs 5 轮循环） |
+| `monitor/close-mem-ab.ps1` | 三组对照：静止 / 最小化-还原 / 真隐藏-显示（定性「隐藏到底贵不贵」） |
+| `monitor/close-hide-dlg.ps1` | 第四组：`CloseAction=1` 隐藏且不弹框，把 Hide 自身与 ContentDialog 的代价拆开 |
+| `monitor/repro-close.ps1` | 关闭流程最小复现（自动开 trace 并打印关闭相关日志） |
+| `monitor/mem.ps1` | 长时内存观测（默认 180 秒，落 CSV） |
+| `monitor/mem-rows.ps1` | 内存曲线与真实行数对齐 |
+| `monitor/mem-scroll.ps1` | 滚动后内存是否阶跃 |
+| `monitor/shot.ps1` | `PrintWindow` 截图 |
+| `monitor/diag.ps1` / `monitor/dump.ps1` | trace 采集 / UIA 树转储 |
+| `common/mem-baseline.ps1` | **内存红线基线**：静止 / 两页互切 20 轮 / 隐藏-显示 20 轮 / 设置开合 30 轮 / 托盘常驻 180 秒，报告工作集与私有内存两列 |
+| `service/check.ps1` | 服务列表、三列双向排序、搜索、筛选、详情面板 |
+| `service/create.ps1` | 创建服务的表单校验 + **真建出来**（脚本结束时会删掉并确认删除成功） |
+| `service/mem.ps1` | 服务侧干净实例内存 |
+| `service/admin.ps1` | 提权模型：应用是管理员、写操作直接生效、不弹提权框 |
+| `build/make-icon.ps1` | 生成 `resources/app.ico`（几何图形，可复现） |
+| `build/install-winui-workload.ps1` | 装 WinUI 3 工作流 |
 
-**带中文字面量的脚本只能用 `pwsh` 跑**（`pwsh -NoProfile -File .\tools\closeflow.ps1`）。
+**验收脚本必须在提权 shell 里跑** —— UI Automation 看不到跨完整性级别的界面
+（同一个窗口，提权客户端拿到 451 个后代，非提权客户端只拿到 4 个）。
+`tools/common/common.ps1` 的 `Require-Elevated` 会自动把脚本提权重跑并回传输出与退出码。
+逃生口是 `LINGWU_TOOLBOX_UNELEVATED=1`（此时驱动的是清单改成 `asInvoker` 的验证副本，
+写操作会被 OS 拒绝）。详见 AGENTS.md「验收脚本」。
+
+**带中文字面量的脚本只能用 `pwsh` 跑**（`pwsh -NoProfile -File .\tools\monitor\close-flow.ps1`）。
 这些 `.ps1` 是 UTF-8 无 BOM，而 Windows PowerShell 5.1 按系统 ANSI（936）读，
 中文会被切碎后吞掉引号，报出来的是 `ParserError`，完全指不到真正的原因。
 
-**本机无法用合成鼠标输入做点击取证**：`mouse_event` / `SendInput` 点不动任何系统控件。
+**本机无法用合成鼠标输入做点击取证**：`mouse_event` / `SendInput` 点不动任何系统控件
+（Win11 的托盘是 XAML island 弹窗，实测合成右键打在上面没有任何弹出菜单）。
 所以不要把「模拟点击后没反应」当成 bug 证据，要换成 UIA 断言 + 读可观测状态
 （`IsIconic` / `ToggleState` / ini / 注册表 / UIA 枚举托盘按钮）。
+`monitor/tray-click.ps1` 因此会在「点了但 shell 没反应」时输出 `SKIP` 而不是 FAIL ——
+**环境限制和产品缺陷要分开报**，运行器把 SKIP 单独统计成一列。
 
 跨进程 UIA 一律按 `ProcessId` 过滤（见踩坑 20）。
 
@@ -794,11 +986,30 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1
 
 程序会写这些位置，测试后要清理：
 
-- `%APPDATA%\LingwuSysMon\settings.ini`
-- `%LOCALAPPDATA%\LingwuSysMon\trace.log`（仅 `trace.on` 存在时）
-- `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `LingwuSysmon` 值（仅自启动开启时）
+- `%APPDATA%\LingwuToolbox\settings.ini`
+- `%LOCALAPPDATA%\LingwuToolbox\trace.log`（仅 `trace.on` 存在时）
+- `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `LingwuToolbox` 值（仅自启动开启时）
 
 **测试开机自启后必须清除注册表项**，否则会在用户机器上留下真实自启。
+
+## 已知限制
+
+- **Windows 10 1809–1903 没有实测环境。** Mica 与圆角的门控逻辑是按系统版本判断的，
+  但这两个版本上没人跑过。1809 是最低支持版本，不是验证过的版本。
+- **本机无法用合成鼠标输入取证**，所有 UI 验收都走 UI Automation 的 Invoke / Value /
+  SelectionItem 模式。右键菜单的弹出路径（Win32 `WM_CONTEXTMENU` + 命中测试）
+  已用「弹到固定坐标 + DPI 感知截图」的办法做过端到端取证（2026-10-23）。
+- 服务列表的启动类型需要每服务一次 `QueryServiceConfigW`。首次约 345 次 RPC
+  （在后台线程里，用户看到的是列表先出来、启动类型随后补齐），稳态命中缓存为 0 次。
+- 删除服务后进程可能短暂残留（SCM 的「已标记删除」状态），列表里会显示「（已标记删除）」，
+  完全停止后消失。
+- 状态栏的「管理员权限」是常量（manifest 保证了这一点）。用 `asInvoker` 验证副本跑的时候
+  它会说谎，而写操作会被 OS 拒绝 —— 别把它当成应用缺陷。
+- **托盘图标可能在 Win11 的「^ 隐藏图标」区里。** Win11 把新图标默认收进溢出区，
+  应用只能靠写一个未公开的注册表字段（`NotifyIconSettings\<哈希>\IsPromoted`）求提升，
+  而 **Explorer 建那条登记项是异步的，而且不是每台机器都建** —— 实测这台机器就不建，
+  所以提升在这台机器上就是做不到。图标在不在可见区不影响功能，托盘菜单和左键唤回都正常；
+  想把它提到可见区，手动拖一次即可（Explorer 会记下，之后的实例就常驻可见区）。
 
 ## 需求变更
 

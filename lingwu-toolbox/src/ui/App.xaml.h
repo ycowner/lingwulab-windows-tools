@@ -4,7 +4,7 @@
 // ApplicationDefinition（App.xaml）不需要配 .idl —— 官方模板里也只有
 // MainWindow.idl，App 的 runtimeclass 由 XAML 编译器生成。
 // 所以也没有 factory_implementation::App，工厂是 cppwinrt 通过
-// winrt_make_LingwuSysmon_App() 提供的。
+// winrt_make_LingwuToolbox_App() 提供的。
 #include "App.xaml.g.h"
 
 #include "pch.h"

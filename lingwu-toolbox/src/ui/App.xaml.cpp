@@ -11,7 +11,7 @@
 #include <shellapi.h>
 
 // autostart.h 的契约全在 lingwu::core::monitor 命名空间下（Settings 在 core/settings.h）。
-// 本文件短，直接用别名，读起来与 core/metrics.h 那边的用法一致。
+// 本文件短，直接用别名，读起来与 core/monitor/metrics.h 那边的用法一致。
 namespace core = lingwu::core::monitor;
 
 using namespace winrt;
