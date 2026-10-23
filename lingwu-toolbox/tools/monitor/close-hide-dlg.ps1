@@ -10,20 +10,22 @@
 # 本组把对话框摘掉：CloseAction=1 时点 X **直接隐藏、不弹框**。
 # 与 closememab.ps1 的 hideshow 组逐项对照，差值就是对话框那一项的代价。
 #
-# 用法：pwsh -NoProfile -File .\tools\closehidedlg.ps1
+# 用法：pwsh -NoProfile -File .\tools\monitor\close-hide-dlg.ps1
 
 param(
     [string]$Exe = '',
     [int]$Settle = 120,
     [int]$Tail = 90,
     [int]$Cycles = 5,
-    [string]$OutCsv = "$env:TEMP\lingsysmon_closehidedlg.csv"
+    [string]$OutCsv = "$env:TEMP\lingwu_toolbox_closehidedlg.csv"
 )
 
-# exe 路径按脚本位置解析，项目目录改名后不必再改这里。
-if (-not $Exe) { $Exe = Join-Path $PSScriptRoot '..\dist\Release\LingwuSysmon.exe' }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+. (Join-Path $PSScriptRoot '..\common\tray.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
@@ -42,7 +44,7 @@ public class HD {
 '@
 
 function Stop-App {
-    Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
+    Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 }
@@ -62,14 +64,7 @@ function Find-El([int]$procId, $controlType, [string]$name) {
     return $null
 }
 function Find-TrayButton {
-    $tray = $AE::RootElement.FindFirst($TS::Children,
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'Shell_TrayWnd')))
-    if (-not $tray) { return $null }
-    $bc = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::Button)
-    foreach ($b in $tray.FindAll($TS::Descendants, $bc)) {
-        if ($b.Current.ClassName -eq 'SystemTray.NormalButton' -and $b.Current.Name -like 'Lingwu SysMon*') { return $b }
-    }
-    return $null
+    return (Test-ToolboxTrayIconPresent)
 }
 
 # 等托盘按钮并 Invoke，带重试。
@@ -83,21 +78,15 @@ function Restore-ViaTray([int]$procId, [IntPtr]$hwnd, [int]$sec = 25) {
     $attempts = 0
     while ((Get-Date) -lt $dl) {
         if ([bool]([HD]::IsWindowVisible($hwnd))) { return @{ ok = $true; why = "already visible (attempts=$attempts)" } }
-        $b = Find-TrayButton
-        if ($b) {
+        if (Test-ToolboxTrayIconPresent) {
             $attempts++
-            try {
-                $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-            } catch {
-                Start-Sleep -Milliseconds 600
-                continue
-            }
+            [void](Invoke-ToolboxTrayButton)
             Start-Sleep -Seconds 2
             if ([bool]([HD]::IsWindowVisible($hwnd))) { return @{ ok = $true; why = "restored via tray, invoke#$attempts" } }
         }
         Start-Sleep -Milliseconds 800
     }
-    return @{ ok = $false; why = "NOT RESTORED: trayFound=$([bool](Find-TrayButton)) invokeAttempts=$attempts" }
+    return @{ ok = $false; why = "NOT RESTORED: trayFound=$(Test-ToolboxTrayIconPresent) invokeAttempts=$attempts" }
 }
 
 $samples = New-Object System.Collections.Generic.List[object]
@@ -113,13 +102,13 @@ function Sample([int]$procId, [string]$group, [int]$t, [string]$note = '') {
     return $true
 }
 
-$mdir = Join-Path $env:LOCALAPPDATA 'LingwuSysMon'
+$mdir = Join-Path $env:LOCALAPPDATA 'LingwuToolbox'
 if (Test-Path (Join-Path $mdir 'trace.on')) {
     Move-Item (Join-Path $mdir 'trace.on') (Join-Path $mdir 'trace.on.disabled') -Force
 }
 
 # CloseAction = 1：点 X 直接隐藏，不弹确认框
-$IniPath = Join-Path $env:APPDATA 'LingwuSysMon\settings.ini'
+$IniPath = Join-Path $env:APPDATA 'LingwuToolbox\settings.ini'
 Stop-App
 if (Test-Path $IniPath) {
     (Get-Content $IniPath) -replace '^\s*CloseAction\s*=\s*\d+', 'CloseAction=1' | Set-Content $IniPath -Encoding UTF8

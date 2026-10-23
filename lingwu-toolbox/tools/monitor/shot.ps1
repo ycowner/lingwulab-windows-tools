@@ -4,6 +4,9 @@ param(
     [int]$WarmupSec = 8,
     [int]$GapSec = 10
 )
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 
 Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace Native -Name Win -MemberDefinition @'
@@ -57,10 +60,10 @@ function Save-WindowShot {
     return "$w x $h$(if(-not $ok){' (via screen fallback)'})"
 }
 
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
-$trace = Join-Path $env:LOCALAPPDATA 'LingwuSysMon\trace.log'
+$trace = Join-Path $env:LOCALAPPDATA 'LingwuToolbox\trace.log'
 if (Test-Path $trace) { Remove-Item $trace -Force }
 
 $p = Start-Process $Exe -PassThru

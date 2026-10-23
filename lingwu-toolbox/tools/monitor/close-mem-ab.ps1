@@ -12,7 +12,7 @@
 # 最小化-还原这一组完全从外部用 ShowWindow 驱动，不经过应用代码，
 # 所以它测的是「窗口不可见 → 可见」这件事本身的开销。
 #
-# 用法：pwsh -NoProfile -File .\tools\closememab.ps1
+# 用法：pwsh -NoProfile -File .\tools\monitor\close-mem-ab.ps1
 
 param(
     [string]$Exe = '',
@@ -20,13 +20,15 @@ param(
     [int]$Settle = 120,
     [int]$Tail = 90,
     [int]$Cycles = 5,
-    [string]$OutCsv = "$env:TEMP\lingsysmon_closememab.csv"
+    [string]$OutCsv = "$env:TEMP\lingwu_toolbox_closememab.csv"
 )
 
-# exe 路径按脚本位置解析，项目目录改名后不必再改这里。
-if (-not $Exe) { $Exe = Join-Path $PSScriptRoot '..\dist\Release\LingwuSysmon.exe' }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+. (Join-Path $PSScriptRoot '..\common\tray.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
@@ -49,7 +51,7 @@ public class MA {
 '@
 
 function Stop-App {
-    Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
+    Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 }
@@ -78,14 +80,7 @@ function Wait-El([int]$procId, $controlType, [string]$name, [int]$sec = 15) {
     return $null
 }
 function Find-TrayButton {
-    $tray = $AE::RootElement.FindFirst($TS::Children,
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'Shell_TrayWnd')))
-    if (-not $tray) { return $null }
-    $bc = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::Button)
-    foreach ($b in $tray.FindAll($TS::Descendants, $bc)) {
-        if ($b.Current.ClassName -eq 'SystemTray.NormalButton' -and $b.Current.Name -like 'Lingwu SysMon*') { return $b }
-    }
-    return $null
+    return (Test-ToolboxTrayIconPresent)
 }
 
 $samples = New-Object System.Collections.Generic.List[object]
@@ -127,11 +122,11 @@ function TailObs([int]$procId, [string]$g, [int]$from, [int]$sec) {
 }
 
 # 关掉 trace（文件 I/O 会污染曲线）
-$mdir = Join-Path $env:LOCALAPPDATA 'LingwuSysMon'
+$mdir = Join-Path $env:LOCALAPPDATA 'LingwuToolbox'
 if (Test-Path (Join-Path $mdir 'trace.on')) {
     Move-Item (Join-Path $mdir 'trace.on') (Join-Path $mdir 'trace.on.disabled') -Force
 }
-$IniPath = Join-Path $env:APPDATA 'LingwuSysMon\settings.ini'
+$IniPath = Join-Path $env:APPDATA 'LingwuToolbox\settings.ini'
 Stop-App
 if (Test-Path $IniPath) {
     (Get-Content $IniPath) -replace '^\s*CloseAction\s*=\s*\d+', 'CloseAction=0' | Set-Content $IniPath -Encoding UTF8
@@ -186,8 +181,7 @@ for ($c = 1; $c -le $Cycles; $c++) {
     $hid = -not [bool]([MA]::IsWindowVisible($g3.hwnd))
     Start-Sleep -Seconds 7; $t3++
     if (-not (Sample $g3.proc.Id 'hideshow' $t3 "hidden$c")) { break }
-    $tray = Find-TrayButton
-    if ($tray) { $tray.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+    [void](Invoke-ToolboxTrayButton)
     Start-Sleep -Seconds 3; $t3++
     if (-not (Sample $g3.proc.Id 'hideshow' $t3 "show$c")) { break }
     $shw = [bool]([MA]::IsWindowVisible($g3.hwnd))

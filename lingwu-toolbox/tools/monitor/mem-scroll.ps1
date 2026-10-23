@@ -9,13 +9,16 @@ param(
 # 做法：启动后 $ScrollAt 秒，用 UIA ScrollPattern 把列表滚到底再滚回顶部，
 # 之后继续采样到 $Seconds。若阶跃时点跟着提前到 $ScrollAt 附近，即证实。
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
 $AE = [System.Windows.Automation.AutomationElement]
 $TS = [System.Windows.Automation.TreeScope]
 
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 $p = Start-Process $Exe -PassThru

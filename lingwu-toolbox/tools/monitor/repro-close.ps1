@@ -1,16 +1,17 @@
 # repro_close.ps1 —— 最小复现：T1/T2 通过后，第三次 WM_CLOSE 为什么把进程弄没了
 #
-# 用法：pwsh -NoProfile -File .\tools\repro_close.ps1
-# 需要 %LOCALAPPDATA%\LingwuSysMon\trace.on 存在（脚本自己会建）。
+# 用法：pwsh -NoProfile -File .\tools\monitor\repro-close.ps1
+# 需要 %LOCALAPPDATA%\LingwuToolbox\trace.on 存在（脚本自己会建）。
 
 param(
     [string]$Exe = ''
 )
 
-# exe 路径按脚本位置解析，项目目录改名后不必再改这里。
-if (-not $Exe) { $Exe = Join-Path $PSScriptRoot '..\dist\Release\LingwuSysmon.exe' }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
@@ -28,15 +29,15 @@ public class RC {
 }
 '@
 
-$mdir = Join-Path $env:LOCALAPPDATA 'LingwuSysMon'
+$mdir = Join-Path $env:LOCALAPPDATA 'LingwuToolbox'
 New-Item -ItemType Directory -Path $mdir -Force | Out-Null
 Set-Content -Path (Join-Path $mdir 'trace.on') -Value '1' -Encoding ASCII
 $log = Join-Path $mdir 'trace.log'
 if (Test-Path $log) { Move-Item $log "$log.prev" -Force }
 
-function Get-AppProc { Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } | Select-Object -First 1 }
+function Get-AppProc { Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } | Select-Object -First 1 }
 function Stop-App {
-    Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
+    Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 }
@@ -72,7 +73,7 @@ function Wait-El([int]$procId, $controlType, [string]$name, [int]$sec = 15) {
 function Alive([int]$procId) { $null -ne (Get-Process -Id $procId -ErrorAction SilentlyContinue) }
 function Mark([string]$s) { Write-Output ">> $s" }
 
-$IniPath = Join-Path $env:APPDATA 'LingwuSysMon\settings.ini'
+$IniPath = Join-Path $env:APPDATA 'LingwuToolbox\settings.ini'
 Stop-App
 if (Test-Path $IniPath) {
     (Get-Content $IniPath) -replace '^\s*CloseAction\s*=\s*\d+', 'CloseAction=0' | Set-Content $IniPath -Encoding UTF8

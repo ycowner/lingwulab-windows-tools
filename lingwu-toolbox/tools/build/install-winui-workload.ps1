@@ -1,6 +1,6 @@
 # install-winui-workload.ps1
 #
-# Installs the Visual Studio component needed to build LingwuSysmon (C++/WinRT + WinUI 3).
+# Installs the Visual Studio component needed to build LingwuToolbox (C++/WinRT + WinUI 3).
 #
 # WHY THIS IS NEEDED
 #   The native C++ WinUI 3 XAML compiler reads the MSBuild item @(WinMDReferenceToCompile).
@@ -117,6 +117,6 @@ if ($found) {
 } else {
     Write-Host ''
     Write-Host "WARNING: exit code was 0 but '$componentId' was not found in any instance state.json." -ForegroundColor Yellow
-    Write-Host 'The XAML compiler workaround in LingwuSysmon.vcxproj must stay in place.' -ForegroundColor Yellow
+    Write-Host 'The XAML compiler workaround in LingwuToolbox.vcxproj must stay in place.' -ForegroundColor Yellow
     exit 2
 }

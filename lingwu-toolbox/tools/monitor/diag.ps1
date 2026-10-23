@@ -1,9 +1,12 @@
 param([string]$Exe, [int]$Seconds = 20)
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
-$trace = Join-Path $env:LOCALAPPDATA 'LingwuSysMon\trace.log'
+$trace = Join-Path $env:LOCALAPPDATA 'LingwuToolbox\trace.log'
 if (Test-Path $trace) { Remove-Item $trace -Force }
 
 $p = Start-Process $Exe -PassThru

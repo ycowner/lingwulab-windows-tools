@@ -17,10 +17,12 @@ param(
     [string]$Exe = ''
 )
 
-# exe 路径按脚本位置解析，项目目录改名后不必再改这里。
-if (-not $Exe) { $Exe = Join-Path $PSScriptRoot '..\dist\Release\LingwuSysmon.exe' }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+. (Join-Path $PSScriptRoot '..\common\tray.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
@@ -41,23 +43,12 @@ public class W3 {
 $Zombie = 37480
 
 function Get-AppProc {
-    Get-Process LingwuSysmon -ErrorAction SilentlyContinue |
+    Get-Process LingwuToolbox -ErrorAction SilentlyContinue |
         Where-Object { $_.Id -ne $Zombie }
 }
 
 function Find-TrayButton {
-    $tray = $AE::RootElement.FindFirst(
-        $TS::Children,
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'Shell_TrayWnd')))
-    if (-not $tray) { return $null }
-    $bc = New-Object System.Windows.Automation.PropertyCondition(
-        $AE::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
-    foreach ($b in $tray.FindAll($TS::Descendants, $bc)) {
-        if ($b.Current.ClassName -eq 'SystemTray.NormalButton' -and $b.Current.Name -like 'Lingwu SysMon*') {
-            return $b
-        }
-    }
-    return $null
+    return (Test-ToolboxTrayIconPresent)
 }
 
 function Wait-TrayButton([int]$TimeoutSec = 25) {
@@ -82,7 +73,10 @@ function Get-PopupMenuItems {
             if ($m.Current.Name) { $items.Add($m.Current.Name) }
         }
     }
-    return $items
+    # 逗号运算符：不让 PowerShell 把列表拆成一个个字符串输出。
+    # 空列表被拆开之后函数返回的是 $null，调用方的 $items.Count 就炸
+    # 「在此对象上找不到属性 Count」。
+    return ,$items
 }
 
 function Get-MainWindowRect {
@@ -105,6 +99,20 @@ function Get-MainWindowRect {
     return $res
 }
 
+# 断言计数器。验收运行器按 [PASS] / [FAIL] 标记统计，
+# 所以每个 stage 都要留下标记，不能只有一句说明。
+$script:Pass = 0
+$script:Fail = 0
+function Assert-True([string]$What, [bool]$Cond, [string]$Extra = '') {
+    if ($Cond) {
+        $script:Pass++
+        Write-Output ("  [PASS] {0} {1}" -f $What, $Extra)
+    } else {
+        $script:Fail++
+        Write-Output ("  [FAIL] {0} {1}" -f $What, $Extra)
+    }
+}
+
 $proc = Get-AppProc
 if (-not $proc) { Write-Output "FAIL: 应用未在运行（本脚本不启动应用，请先启动并等托盘图标就绪）"; exit 1 }
 $pid_ = $proc.Id
@@ -117,9 +125,17 @@ switch ($Stage) {
         # WM_RBUTTONUP；但菜单弹出后**枚举菜单项**是纯 UIA 读取，可靠。
         $b = Wait-TrayButton
         if (-not $b) { Write-Output 'FAIL: 未找到托盘按钮'; exit 1 }
-        $r = $b.GetCurrentPropertyValue($AE::BoundingRectangleProperty)
-        $cx = [int]($r.X + $r.Width / 2); $cy = [int]($r.Y + $r.Height / 2)
-        Write-Output "tray button rect=$([int]$r.X),$([int]$r.Y) $([int]$r.Width)x$([int]$r.Height) center=$cx,$cy"
+        Assert-True '托盘图标存在（可见区或 ^ 溢出浮窗）' $true
+        $rect = Get-ToolboxTrayRect
+        if ($rect) {
+            $cx = $rect.X + [int]($rect.W/2); $cy = $rect.Y + [int]($rect.H/2)
+            Write-Output "tray button rect=$($rect.X),$($rect.Y) $($rect.W)x$($rect.H) center=$cx,$cy"
+        } else {
+            # 图标在 "^" 溢出浮窗里。浮窗关闭后元素的 BoundingRectangle 是
+            # NaN/∞，没有可用的屏幕矩形 —— 但本 stage 不需要坐标，只需要元素
+            # 本身，所以这里不是错误。
+            Write-Output 'tray button rect=(none) -- the icon sits in the "^" overflow flyout'
+        }
 
         Add-Type -Language CSharp @'
 using System;
@@ -137,9 +153,20 @@ public class MB {
         # Shell_NotifyIcon 的替代路径 —— 通过主窗口的托盘菜单命令 ID 触发。
         # 由于本机 SendInput 不可用，改为验证**菜单内容**由主窗口侧提供：
         # 读托盘菜单的结构只能靠真实弹出，故本 stage 只验证按钮存在与可 Invoke。
-        $ip = $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-        Write-Output "InvokePattern supported: $([bool]$ip)"
-        if (-not $ip) { Write-Output 'FAIL: 托盘按钮不支持 InvokePattern'; exit 1 }
+        # 这里只查「支不支持 Invoke」，不要真的 Invoke —— 真的 Invoke 会把
+        # 主窗口叫出来，那是 left stage 的事。
+        #
+        # Get-ToolboxTrayButton 打开溢出浮窗后会保持打开（元素只在浮窗打开
+        # 期间有效），所以用完必须 Close-ToolboxTray。
+        $ctx = Get-ToolboxTrayButton
+        try {
+            $supported = Test-UiaInvokeSupported $ctx.Button
+            Write-Output "InvokePattern supported: $supported"
+            Assert-True '托盘按钮支持 InvokePattern' $supported
+            if (-not $supported) { exit 1 }
+        } finally {
+            Close-ToolboxTray $ctx
+        }
 
         # 菜单项文本的验证放在 left/exit stage：Invoke 走的是「左键」语义，
         # 会显示主窗口；而菜单是右键语义。两者都由 tray_icon.cpp 的
@@ -148,6 +175,7 @@ public class MB {
         Write-Output '      菜单五项契约见 AGENTS.md「托盘菜单契约」一节'
         $m = Get-MainWindowRect
         Write-Output "main window: $(if ($m) {"$($m.X),$($m.Y) $($m.W)x$($m.H)"} else {'未找到'})"
+        Assert-True '主窗口可定位' ($null -ne $m)
     }
 
     'left' {
@@ -162,18 +190,18 @@ public class MB {
 
         $b = Wait-TrayButton
         if (-not $b) { Write-Output 'FAIL: 未找到托盘按钮'; exit 1 }
-        $ip = $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-        if (-not $ip) { Write-Output 'FAIL: 托盘按钮不支持 InvokePattern'; exit 1 }
+        if (-not (Invoke-ToolboxTrayButton)) {
+            Write-Output 'FAIL: the tray button has no InvokePattern'; exit 1
+        }
         Write-Output 'invoking tray button...'
-        $ip.Invoke()
         Start-Sleep -Seconds 3
 
         $m2 = Get-MainWindowRect
         if (-not $m2) { Write-Output 'FAIL: Invoke 后主窗口消失'; exit 1 }
         $iconic = [W3]::IsIconic([IntPtr]$m2.Hwnd)
         Write-Output "after: $($m2.X),$($m2.Y) $($m2.W)x$($m2.H) IsIconic=$iconic (期望 False)"
-        if ($iconic) { Write-Output 'FAIL: 托盘左键未恢复主窗口'; exit 1 }
-        Write-Output 'PASS: 托盘左键（Invoke）恢复了主窗口'
+        Assert-True '托盘左键（Invoke）恢复了主窗口' (-not $iconic)
+        if ($iconic) { exit 1 }
 
         $alive = Get-AppProc
         Write-Host "process still alive: $([bool]$alive) priv=$([math]::Round($alive.PrivateMemorySize64/1MB,1))MB"
@@ -183,14 +211,19 @@ public class MB {
         # 退出无法用 UIA 触发（菜单项要点出来），只能验证「Invoke 不会误退出」
         $b = Wait-TrayButton
         if (-not $b) { Write-Output 'FAIL: 未找到托盘按钮'; exit 1 }
-        $ip = $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-        $ip.Invoke()
+        [void](Invoke-ToolboxTrayButton)
         Start-Sleep -Seconds 3
         $alive = Get-AppProc
         Write-Output "after invoke, process alive: $([bool]$alive) (期望 True —— 左键不该退出)"
-        if (-not $alive) { Write-Output 'FAIL: 托盘左键把进程退掉了'; exit 1 }
+        Assert-True '托盘左键不误退出' ($null -ne $alive)
+        if (-not $alive) { exit 1 }
         $b2 = Wait-TrayButton 10
         Write-Output "tray button still present: $([bool]$b2) (期望 True)"
-        Write-Output 'PASS: 托盘左键不误退出'
+        Assert-True 'Invoke 之后托盘图标还在' ($null -ne $b2)
     }
 }
+
+Write-Output ''
+Write-Output '=========================================================='
+Write-Output ("RESULT: pass={0}  fail={1}" -f $script:Pass, $script:Fail)
+if ($script:Fail -gt 0) { exit 1 } else { exit 0 }

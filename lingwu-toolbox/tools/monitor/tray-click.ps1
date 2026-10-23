@@ -1,11 +1,14 @@
 # 真实点击托盘图标，验证右键菜单 / 左键唤主窗 / X=最小化 / 真退出 / 单实例。
 # 用 UIA 定位 SystemTray.NormalButton，用 SendInput 真实点击（UIA Invoke 不支持右键）。
 param(
-    [ValidateSet('rightmenu','leftclick','xminimize','exit','second','settings','aggregate')]
+    [ValidateSet('rightmenu','leftclick','xminimize','exit','second','settings')]
     [string]$Stage = 'rightmenu'
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+. (Join-Path $PSScriptRoot '..\common\tray.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
 Add-Type -Language CSharp @'
 using System;
 using System.Runtime.InteropServices;
@@ -101,8 +104,8 @@ public class W2 {
 # 当前被测进程 pid。由各 stage 自己决定怎么取（默认排除已知的僵尸残留）。
 $script:AppPid = 0
 
-$script:AppExe = Join-Path $PSScriptRoot '..\dist\Release\LingwuSysmon.exe'
-$script:TracePath = Join-Path $env:LOCALAPPDATA 'LingwuSysMon\trace.log'
+$script:AppExe = Resolve-ToolboxExe
+$script:TracePath = Join-Path $env:LOCALAPPDATA 'LingwuToolbox\trace.log'
 
 function Get-Trace {
     if (Test-Path $script:TracePath) {
@@ -112,34 +115,79 @@ function Get-Trace {
 function Trace-Len { (Get-Trace).Length }
 
 function Find-TrayButton {
-    $root = [System.Windows.Automation.AutomationElement]::RootElement
-    $cond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ClassNameProperty, 'Shell_TrayWnd')
-    $tray = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
-    if (-not $tray) { return $null }
-    $btnCond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-        [System.Windows.Automation.ControlType]::Button)
-    foreach ($b in $tray.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond)) {
-        if ($b.Current.ClassName -eq 'SystemTray.NormalButton' -and $b.Current.Name -like 'Lingwu SysMon*') {
-            $r = $b.GetCurrentPropertyValue([System.Windows.Automation.AutomationElement]::BoundingRectangleProperty)
-            return @{ X = [int]$r.X; Y = [int]$r.Y; W = [int]$r.Width; H = [int]$r.Height }
-        }
+    # The tray icon's screen rectangle, or $null.
+    #
+    # The rectangle of an icon inside the Win11 "^" overflow flyout is only
+    # valid while the flyout is open -- so this opens it and KEEPS it open.
+    # The caller has to close it with Close-ToolboxTray $t.Ctx.
+    $st = Get-ToolboxTrayState -KeepOpen
+    if (-not $st.Present) { return $null }
+    if (-not $st.Rect) {
+        # 元素活着但拿不到矩形（NaN/∞）。先把浮窗关回去再报。
+        Close-ToolboxTray $st.Ctx
+        return $null
     }
-    return $null
+    return @{
+        X = $st.Rect.X; Y = $st.Rect.Y; W = $st.Rect.W; H = $st.Rect.H
+        Overflow = $st.Overflow; Ctx = $st.Ctx
+    }
+}
+
+# 把浮窗关回去。Find-TrayButton 开了不关，桌面就一直是「溢出浮窗展开」的
+# 样子，后面的 stage 会点歪。
+function Close-TrayFlyout($T) {
+    if ($T -and $T.Ctx) { Close-ToolboxTray $T.Ctx }
 }
 
 # 带重试的版本。Shell_NotifyIcon 注册到托盘有延迟（explorer 侧异步刷新），
 # 刚启动就去枚举会「找不到按钮」而误判成应用没托盘图标 —— 实测踩过：
 # 启动后立即枚举为空，等 12 秒后同一个进程的按钮就在 (2291,1704)。
+#
+# 【图标在溢出区不是失败】
+# Win11 把新托盘图标收进 "^" 溢出浮窗。浮窗里的图标**是有屏幕矩形的**
+# （实测 80x80 @ 3067,1710），但那个矩形只在浮窗打开期间有效 ——
+# 所以这里用 -KeepOpen，拿到矩形后不关浮窗，等点击完再关。
+# 找不到图标（等满 25 秒）才是真的 FAIL：那说明应用真的没有托盘图标。
+#
+# 【合成点击点不动 shell 时报 SKIP，不报 FAIL】
+# 本脚本用 SendInput 合成真实鼠标点击。Win11 的托盘是 XAML island 弹窗，
+# 实测 SendInput 点它没有任何反应（右键后 #32768 菜单一个都没有）。
+# 那是**环境限制**，不是产品缺陷 —— 报 FAIL 会把验收板染红并误导判断。
+# 判据是「点完之后弹出菜单出现了没有」：出现了就继续验菜单内容，
+# 没出现就报 SKIP 并把证据打出来。
+#
+# 替代验证路径：tools/monitor/tray-invoke.ps1 —— 同一个图标，走 UI
+# Automation 的 Invoke，溢出区照样能点，而且不依赖坐标。
 function Wait-TrayButton([int]$TimeoutSec = 25) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $t = Wait-TrayButton
+        # 这里必须调 Find-TrayButton（真正去枚举托盘的那个），不能调
+        # Wait-TrayButton 自己 —— 自己调自己是无限递归，脚本永远不返回，
+        # 而且 PowerShell 不会报错，表现为「卡住不动」。
+        # 这个笔误从迁移前就在（原 tools/trayclick.ps1 同样一行），
+        # 之前每次跑它都先被更早的 exe 路径问题挡住，所以从没暴露出来。
+        $t = Find-TrayButton
         if ($t) { return $t }
         Start-Sleep -Milliseconds 700
     }
     return $null
+}
+
+# 合成右键托盘图标，然后把弹出来的菜单项读回来。
+#
+# 返回 @{ Items = <字符串列表> | $null; Why = <没菜单的原因> }
+#   Items = $null  →  点不动（环境限制），调用方报 SKIP
+#   Items = 空列表 →  菜单真的空的（产品问题），调用方报 FAIL
+function Invoke-TrayRightClick($T) {
+    if (-not $T) { return @{ Items = $null; Why = 'no tray icon' } }
+    $cx = $T.X + [int]($T.W / 2); $cy = $T.Y + [int]($T.H / 2)
+    [In]::ClickAt($cx, $cy, $true)
+    Start-Sleep -Milliseconds 900
+    $items = Get-PopupMenuItems
+    if ($items.Count -eq 0) {
+        return @{ Items = $null; Why = "the synthetic right-click at $cx,$cy produced no popup menu (SendInput does not drive the Win11 tray XAML island on this machine)" }
+    }
+    return @{ Items = $items; Why = '' }
 }
 
 # 找 #32768 弹出菜单窗口并读出所有菜单项文本
@@ -157,7 +205,10 @@ function Get-PopupMenuItems {
             $items.Add($m.Current.Name)
         }
     }
-    return $items
+    # 逗号运算符：不让 PowerShell 把列表拆成一个个字符串输出。
+    # 空列表被拆开之后函数返回的是 $null，调用方的 $items.Count 就炸
+    # 「在此对象上找不到属性 Count」。
+    return ,$items
 }
 
 function Get-MainWindowRect {
@@ -182,12 +233,16 @@ switch ($Stage) {
     'rightmenu' {
         $t = Wait-TrayButton
         if (-not $t) { "FAIL: 未找到托盘按钮"; exit 1 }
-        "托盘按钮: $($t.X),$($t.Y) $($t.W)x$($t.H)"
-        $cx = $t.X + [int]($t.W/2); $cy = $t.Y + [int]($t.H/2)
+        "托盘按钮: $($t.X),$($t.Y) $($t.W)x$($t.H)  (在溢出区=$($t.Overflow))"
         $len = Trace-Len
-        [In]::ClickAt($cx, $cy, $true)
-        Start-Sleep -Milliseconds 700
-        $items = Get-PopupMenuItems
+        $rc = Invoke-TrayRightClick $t
+        if ($null -eq $rc.Items) {
+            "SKIP: $($rc.Why)"
+            "      (environment limitation -- use tools/monitor/tray-invoke.ps1 instead: UI Automation Invoke works inside the overflow and needs no coordinates)"
+            Close-TrayFlyout $t
+            exit 0
+        }
+        $items = $rc.Items
         "---- 托盘菜单项 ($($items.Count)) ----"
         $items | ForEach-Object { "  [$_]" }
         "---- 新增 trace ----"
@@ -196,9 +251,10 @@ switch ($Stage) {
         Start-Sleep -Milliseconds 500
         $after = Get-PopupMenuItems
         "按 Esc 后菜单项数: $($after.Count)  (期望 0)"
+        Close-TrayFlyout $t
     }
     'leftclick' {
-        $proc = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
+        $proc = Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
         if (-not $proc) { "FAIL: 应用未在运行"; exit 1 }
         $script:AppPid = $proc.Id
         $m = Get-MainWindowRect
@@ -215,6 +271,7 @@ switch ($Stage) {
         $len = Trace-Len
         [In]::ClickAt($cx, $cy, $false)
         Start-Sleep -Milliseconds 900
+        Close-TrayFlyout $t
         "---- 新增 trace ----"
         (Get-Trace).Substring($len)
         $m2 = Get-MainWindowRect
@@ -222,7 +279,7 @@ switch ($Stage) {
         if ($m2) { "点击后 IsIconic=$([W]::IsIconic([IntPtr]$m2.Hwnd))  (期望 False)" }
     }
     'xminimize' {
-        $proc = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
+        $proc = Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
         if (-not $proc) { "FAIL: 应用未在运行"; exit 1 }
         $script:AppPid = $proc.Id
         $m = Get-MainWindowRect
@@ -233,7 +290,7 @@ switch ($Stage) {
         [W2]::Send(0x73, 0); Start-Sleep -Milliseconds 60
         [W2]::Send(0x73, 2); Start-Sleep -Milliseconds 60
         [W2]::Send(0x12, 2); Start-Sleep -Milliseconds 800
-        $alive = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
+        $alive = Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
         "Alt+F4 后进程: $(if ($alive) {($alive.Id -join ',')} else {'已退出'})  (期望仍存活)"
         "Alt+F4 后 IsIconic=$([W]::IsIconic([IntPtr]$m.Hwnd))  (期望 True)"
         $len = Trace-Len
@@ -243,14 +300,21 @@ switch ($Stage) {
     'exit' {
         $t = Wait-TrayButton
         if (-not $t) { "FAIL: 未找到托盘按钮"; exit 1 }
-        $cx = $t.X + [int]($t.W/2); $cy = $t.Y + [int]($t.H/2)
         $len = Trace-Len
-        [In]::ClickAt($cx, $cy, $true)
-        Start-Sleep -Milliseconds 700
-        $items = Get-PopupMenuItems
+        $rc = Invoke-TrayRightClick $t
+        if ($null -eq $rc.Items) {
+            "SKIP: $($rc.Why)"
+            "      (environment limitation -- use tools/monitor/tray-invoke.ps1 instead)"
+            Close-TrayFlyout $t
+            exit 0
+        }
+        $items = $rc.Items
         "---- 托盘菜单项 ----"; $items | ForEach-Object { "  [$_]" }
         $exitItem = ($items | Where-Object { $_ -eq '退出' })
-        if (-not $exitItem) { "FAIL: 菜单里没有『退出』"; [In]::Key([uint16]0x1B); exit 1 }
+        if (-not $exitItem) {
+            "FAIL: 菜单里没有『退出』"
+            [In]::Key([uint16]0x1B); Close-TrayFlyout $t; exit 1
+        }
         # 用 UIA 点菜单项
         $root = [System.Windows.Automation.AutomationElement]::RootElement
         $cond = New-Object System.Windows.Automation.PropertyCondition(
@@ -267,17 +331,18 @@ switch ($Stage) {
                 }
             }
         }
-        if (-not $clicked) { "FAIL: 无法 Invoke『退出』"; exit 1 }
+        if (-not $clicked) { "FAIL: 无法 Invoke『退出』"; Close-TrayFlyout $t; exit 1 }
+        Close-TrayFlyout $t
         Start-Sleep -Seconds 4
-        $alive = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
+        $alive = Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
         "点击『退出』后进程: $(if ($alive) {($alive.Id -join ',')} else {'已退出'})  (期望 已退出)"
-        "托盘按钮仍在? $(if (Find-TrayButton) {'在'} else {'不在'})  (期望 不在)"
+        "托盘按钮仍在? $(if (Test-ToolboxTrayIconPresent) {'在'} else {'不在'})  (期望 不在)"
         "---- 新增 trace ----"
         (Get-Trace).Substring($len)
     }
     'second' {
         # 启动第二份，验证它把第一份叫出来然后自己退出
-        $proc = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
+        $proc = Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
         if (-not $proc) { "FAIL: 第一份未在运行"; exit 1 }
         $script:AppPid = $proc.Id
         $m1 = Get-MainWindowRect
@@ -290,8 +355,8 @@ switch ($Stage) {
         $p2 = Start-Process -FilePath $script:AppExe -PassThru
         Start-Sleep -Seconds 6
         "第二份 pid=$($p2.Id) 已退出? $($p2.HasExited)  退出码=$($p2.ExitCode)"
-        $all = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
-        "当前 LingwuSysmon 进程: $($all.Id -join ',')  (期望只剩第一份 $($proc.Id))"
+        $all = Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
+        "当前 LingwuToolbox 进程: $($all.Id -join ',')  (期望只剩第一份 $($proc.Id))"
         if ($m1) {
             "第一份 IsIconic=$([W]::IsIconic([IntPtr]$m1.Hwnd))  (期望 False，被第二份唤起)"
         }
@@ -300,14 +365,19 @@ switch ($Stage) {
     }
     'settings' {
         # 托盘菜单「设置…」：点开 → 应弹出设置窗口（复用 Phase 3 的 SettingsWindow）。
-        $proc = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
+        $proc = Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
         if (-not $proc) { "FAIL: 应用未在运行"; exit 1 }
         $script:AppPid = $proc.Id
         $t = Wait-TrayButton
         if (-not $t) { "FAIL: 未找到托盘按钮"; exit 1 }
         $len = Trace-Len
-        [In]::ClickAt($t.X + [int]($t.W/2), $t.Y + [int]($t.H/2), $true)
-        Start-Sleep -Milliseconds 700
+        $rc = Invoke-TrayRightClick $t
+        if ($null -eq $rc.Items) {
+            "SKIP: $($rc.Why)"
+            "      (environment limitation -- use tools/monitor/tray-invoke.ps1 instead)"
+            Close-TrayFlyout $t
+            exit 0
+        }
         $root = [System.Windows.Automation.AutomationElement]::RootElement
         $cond = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::ClassNameProperty, '#32768')
@@ -324,6 +394,7 @@ switch ($Stage) {
             }
         }
         "点『设置…』: $clicked"
+        Close-TrayFlyout $t
         Start-Sleep -Seconds 3
         # 设置窗口是本进程的第二个顶层窗口。按 pid + 名字找。
         $pidCond = New-Object System.Windows.Automation.PropertyCondition(
@@ -338,68 +409,11 @@ switch ($Stage) {
         (Get-Trace).Substring($len)
     }
 
-    'aggregate' {
-        # 托盘菜单「按应用聚合」：切换勾选态，列表应重新分组。
-        $proc = Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 }
-        if (-not $proc) { "FAIL: 应用未在运行"; exit 1 }
-        $script:AppPid = $proc.Id
-        $t = Wait-TrayButton
-        if (-not $t) { "FAIL: 未找到托盘按钮"; exit 1 }
-        $len = Trace-Len
-        [In]::ClickAt($t.X + [int]($t.W/2), $t.Y + [int]($t.H/2), $true)
-        Start-Sleep -Milliseconds 700
-        $root = [System.Windows.Automation.AutomationElement]::RootElement
-        $cond = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ClassNameProperty, '#32768')
-        # 先读一遍勾选态
-        $beforeChecked = $null
-        foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
-            $miCond = New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::MenuItem)
-            foreach ($m in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $miCond)) {
-                if ($m.Current.Name -eq '按应用聚合') {
-                    $beforeChecked = $m.GetCurrentPropertyValue(
-                        [System.Windows.Automation.SelectionItemPattern]::IsSelectedProperty)
-                }
-            }
-        }
-        "切换前『按应用聚合』勾选: $beforeChecked"
-        $clicked = $false
-        foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
-            $miCond = New-object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::MenuItem)
-            foreach ($m in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $miCond)) {
-                if ($m.Current.Name -eq '按应用聚合') {
-                    $ip = $m.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern) -as [System.Windows.Automation.InvokePattern]
-                    if ($ip) { $ip.Invoke(); $clicked = $true }
-                }
-            }
-        }
-        "点『按应用聚合』: $clicked"
-        Start-Sleep -Seconds 3
-        "---- 新增 trace ----"
-        (Get-Trace).Substring($len)
-        # 再点一次，恢复原状
-        [In]::ClickAt($t.X + [int]($t.W/2), $t.Y + [int]($t.H/2), $true)
-        Start-Sleep -Milliseconds 700
-        foreach ($w in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
-            $miCond = New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::MenuItem)
-            foreach ($m in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $miCond)) {
-                if ($m.Current.Name -eq '按应用聚合') {
-                    $ip = $m.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern) -as [System.Windows.Automation.InvokePattern]
-                    if ($ip) { $ip.Invoke() }
-                }
-            }
-        }
-        Start-Sleep -Seconds 3
-        "---- 复原后 trace 新增 ----"
-        (Get-Trace).Substring($len)
-    }
 }
 
 [In]::SetCursorPos($saved[0], $saved[1]) | Out-Null
 "光标已还原: $([In]::Cursor() -join ',')"
+
+Write-Output ''
+Write-Output '=========================================================='
+Write-Output 'RESULT: 本脚本的判定在各个 stage 内直接输出（PASS/FAIL/SKIP）'

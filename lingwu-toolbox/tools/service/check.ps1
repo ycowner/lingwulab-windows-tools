@@ -1,33 +1,41 @@
-# uicheck.ps1 -- baseline acceptance: window opens, list enumerates, columns sort,
-# search filters, status filter switches.
+# check.ps1 -- baseline acceptance for the SERVICE module: the window opens,
+# the list enumerates, columns sort, search filters, status filter switches.
 #
-#   pwsh -NoProfile -File .\tools\uicheck.ps1
-#   pwsh -NoProfile -File .\tools\uicheck.ps1 -Exe .\dist\Release\LingwuServiceManager.exe
+#   pwsh -NoProfile -File .\tools\service\check.ps1
+#   pwsh -NoProfile -File .\tools\service\check.ps1 -Exe .\dist\Release\LingwuToolbox.exe
 #
-# This is the smoke test. If it fails, nothing below it is worth running.
-# It is also the only script that does not touch service state -- every other
-# one either starts/stops a service or creates one.
+# This is the smoke test for the service half of the toolbox. If it fails,
+# nothing below it is worth running. It is also the only service script that
+# does not touch service state -- every other one either starts/stops a
+# service or creates one.
+#
+# The service module is one half of a single window now, so the script has to
+# switch to that half before it can touch anything: the app opens on the
+# monitor page.
 
 [CmdletBinding()]
 param(
-    [string]$Exe = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\Release\LingwuServiceManager.exe')
+    [string]$Exe = ''
 )
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'uia.ps1')
+. (Join-Path $PSScriptRoot '..\common\uia.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 
 $script:UiaFailures = 0
 
-Write-Host '=== uicheck: baseline ==='
-Stop-App 'LingwuServiceManager'
+Write-Host '=== service check: baseline ==='
+Stop-App 'LingwuToolbox'
 $p = Start-App $Exe
 
 # try/finally so a thrown assertion still tears the process down. Without it a
-# failed run leaves LingwuServiceManager.exe running, and the *next* build fails
+# failed run leaves LingwuToolbox.exe running, and the *next* build fails
 # with LNK1104 "cannot open file" -- an error that points at the linker while
 # the real cause is the previous test run.
 try {
     $win = Get-AppWindow $p.Id 60
+    Switch-Module $win 'Service'
 
 Write-Host "`n--- window ---"
 $r = $win.Current.BoundingRectangle
@@ -162,7 +170,7 @@ Write-Host ("  priv={0} MB  ws={1} MB  handles={2}" -f `
     [Math]::Round($p.PrivateMemorySize64 / 1MB, 1),
     [Math]::Round($p.WorkingSet64 / 1MB, 1), $p.HandleCount)
 } finally {
-    Stop-App 'LingwuServiceManager'
+    Stop-App 'LingwuToolbox'
 }
 
-Write-Summary 'uicheck'
+Write-Summary 'service check'

@@ -10,21 +10,24 @@ param(
 # 数值/文本断言。这里读列表行的 Name 列，直接判断是不是按名称排好了。
 #
 # 用例：设置里选「名称」+「2 秒」→ 确定 → 主窗口列表应变为名称升序，
-#       且 ini 落 SortMode=4 / IntervalMs=2000。
+#       且 ini 落 MonitorSortMode=4 / MonitorIntervalMs=2000。
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
 $AE = [System.Windows.Automation.AutomationElement]
 $TS = [System.Windows.Automation.TreeScope]
 
-$Ini = Join-Path $env:APPDATA 'LingwuSysMon\settings.ini'
+$Ini = Join-Path $env:APPDATA 'LingwuToolbox\settings.ini'
 $IniBackup = "$Ini.applybak"
 $hadIni = Test-Path $Ini
 if ($hadIni) { Copy-Item $Ini $IniBackup -Force }
 
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 $p = Start-Process $Exe -PassThru
@@ -58,7 +61,9 @@ function Find-ByTypeInProc($pid_, $controlType) {
     $c1 = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $controlType)
     $c2 = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $pid_)
     $and = New-Object System.Windows.Automation.AndCondition($c1, $c2)
-    return $AE::RootElement.FindAll($TS::Descendants, $and)
+    # Comma prevents PowerShell from unrolling the collection (see the note
+    # in Get-TopWins): an unrolled single-element result loses .Count.
+    return ,$AE::RootElement.FindAll($TS::Descendants, $and)
 }
 
 $win = Get-Win $p.Id
@@ -112,7 +117,15 @@ function Set-Combo($combo, [int]$index, [string]$label) {
     Start-Sleep -Milliseconds 400
     $ec.Collapse()
 }
-Set-Combo $sort 2 'SortCombo'   # 第 3 项 = 名称
+# SortCombo 的 5 项与 core::SortMode 一一对应：
+#   [0] 内存占用 ↓ = SORT_MEM_DESC(0)
+#   [1] 内存占用 ↑ = SORT_MEM_ASC(1)
+#   [2] CPU 占用 ↓  = SORT_CPU_DESC(2)
+#   [3] CPU 占用 ↑  = SORT_CPU_ASC(3)
+#   [4] 名称 A→Z    = SORT_NAME_ASC(4)
+# 名称是第 5 项（下标 4），不是第 3 项 —— 之前写成 2，选中的其实是 CPU ↓，
+# 于是断言「列表按名称排」必然失败，而失败原因看着像「设置没生效」。
+Set-Combo $sort 4 'SortCombo'
 Set-Combo $intv 2 'IntervalCombo'  # 第 3 项 = 2 秒
 
 $okBtn = Find-Id $sw 'OkButton'
@@ -151,12 +164,14 @@ else { Write-Host "FAIL: list not name-sorted (count=$($keys.Count))" }
 # 末尾的还原 Copy-Item 于是把内容当成目标路径去解析，报一堆看不懂的语法错误。
 # （这个坑本轮真的踩了，还原失败，用户的 ini 被留在测试值上。）
 $IniText = Get-Content $Ini -Raw -Encoding Default
-$sm = [regex]::Match($IniText, '(?m)^SortMode=(\d+)')
-$iv = [regex]::Match($IniText, '(?m)^IntervalMs=(\d+)')
-Write-Host ("ini SortMode    = " + $(if ($sm.Success) { $sm.Groups[1].Value } else { 'MISSING' }))
-Write-Host ("ini IntervalMs  = " + $(if ($iv.Success) { $iv.Groups[1].Value } else { 'MISSING' }))
-if ($sm.Success -and $sm.Groups[1].Value -eq '4') { Write-Host 'PASS: SortMode=4 (name asc)' } else { Write-Host 'FAIL: SortMode not 4' }
-if ($iv.Success -and $iv.Groups[1].Value -eq '2000') { Write-Host 'PASS: IntervalMs=2000' } else { Write-Host 'FAIL: IntervalMs not 2000' }
+# 键名带模块前缀：合并成工具箱时两个工具的 ini 合到一份，SortMode / IntervalMs
+# 会互相覆盖，所以改名成 MonitorSortMode / MonitorIntervalMs。
+$sm = [regex]::Match($IniText, '(?m)^MonitorSortMode=(\d+)')
+$iv = [regex]::Match($IniText, '(?m)^MonitorIntervalMs=(\d+)')
+Write-Host ("ini MonitorSortMode   = " + $(if ($sm.Success) { $sm.Groups[1].Value } else { 'MISSING' }))
+Write-Host ("ini MonitorIntervalMs = " + $(if ($iv.Success) { $iv.Groups[1].Value } else { 'MISSING' }))
+if ($sm.Success -and $sm.Groups[1].Value -eq '4') { Write-Host 'PASS: MonitorSortMode=4 (name asc)' } else { Write-Host 'FAIL: MonitorSortMode not 4' }
+if ($iv.Success -and $iv.Groups[1].Value -eq '2000') { Write-Host 'PASS: MonitorIntervalMs=2000' } else { Write-Host 'FAIL: MonitorIntervalMs not 2000' }
 
 # ---- 断言 3：进程还活着 ----------------------------------------------------
 Start-Sleep -Seconds 2

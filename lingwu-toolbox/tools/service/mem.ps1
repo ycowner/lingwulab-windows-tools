@@ -1,7 +1,7 @@
-# uimem.ps1 -- memory footprint measurement.
+# mem.ps1 -- memory footprint measurement for the service module.
 #
-#   pwsh -NoProfile -File .\tools\uimem.ps1
-#   pwsh -NoProfile -File .\tools\uimem.ps1 -Seconds 120
+#   pwsh -NoProfile -File .\tools\service\mem.ps1
+#   pwsh -NoProfile -File .\tools\service\mem.ps1 -Seconds 120
 #
 # Measures a CLEAN instance: the script launches its own process, waits for
 # the poll loop to reach steady state, then samples. Re-running against an
@@ -18,10 +18,15 @@
 #
 # Private bytes is what this process actually costs the system on its own,
 # so that is the number the budget is set against.
+#
+# NOTE: the toolbox is ONE process with TWO resident pages now (the monitor
+# page and the service page are both constructed once and kept alive; only
+# Visibility flips). So this measures the whole application, not "the service
+# half of it" -- the service module cannot be unloaded to save memory.
 
 [CmdletBinding()]
 param(
-    [string]$Exe = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\Release\LingwuServiceManager.exe'),
+    [string]$Exe = '',
     [int]$Seconds = 60,
     [int]$IntervalSec = 5,
     # Private-bytes budget in MB. Exceeding it fails the script.
@@ -37,12 +42,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'uia.ps1')
+. (Join-Path $PSScriptRoot '..\common\uia.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 
-Write-Host "=== uimem: clean instance, ${Seconds}s window ==="
-Stop-App 'LingwuServiceManager'
+Write-Host "=== service mem: clean instance, ${Seconds}s window ==="
+Stop-App 'LingwuToolbox'
 $p = Start-App $Exe
 $win = Get-AppWindow $p.Id 60
+Switch-Module $win 'Service'
 
 # Let the first full enumeration land before sampling: the steady state is the
 # thing worth measuring, not the transient spike while 345 services are being
@@ -93,12 +101,12 @@ if ([Math]::Abs($delta) -gt 10) {
 
 if ($PrivateBudgetMb -gt 0 -and $peak -gt $PrivateBudgetMb) {
     Write-Host ("`nFAIL: private peaked at {0} MB, over the {1} MB budget." -f $peak, $PrivateBudgetMb)
-    Stop-App 'LingwuServiceManager'
+    Stop-App 'LingwuToolbox'
     exit 1
 }
 if ($PrivateBudgetMb -gt 0) {
     Write-Host ("`nOK: private peaked at {0} MB, within the {1} MB budget." -f $peak, $PrivateBudgetMb)
 }
 
-Stop-App 'LingwuServiceManager'
+Stop-App 'LingwuToolbox'
 exit 0

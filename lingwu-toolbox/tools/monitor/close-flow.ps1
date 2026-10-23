@@ -21,10 +21,12 @@ param(
     [int]$IgnorePid = 37480
 )
 
-# exe 路径按脚本位置解析，项目目录改名后不必再改这里。
-if (-not $Exe) { $Exe = Join-Path $PSScriptRoot '..\dist\Release\LingwuSysmon.exe' }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+. (Join-Path $PSScriptRoot '..\common\tray.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
@@ -60,12 +62,12 @@ function Assert-True([string]$name, [bool]$cond, [string]$detail = '') {
 }
 
 function Get-AppProc {
-    Get-Process LingwuSysmon -ErrorAction SilentlyContinue |
+    Get-Process LingwuToolbox -ErrorAction SilentlyContinue |
         Where-Object { $_.Id -ne $IgnorePid } | Select-Object -First 1
 }
 
 function Stop-App {
-    Get-Process LingwuSysmon -ErrorAction SilentlyContinue |
+    Get-Process LingwuToolbox -ErrorAction SilentlyContinue |
         Where-Object { $_.Id -ne $IgnorePid } |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
@@ -132,18 +134,11 @@ function Wait-AppGone([int]$procId, [int]$sec = 15) {
 }
 
 function Find-TrayButton {
-    $tray = $AE::RootElement.FindFirst($TS::Children,
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'Shell_TrayWnd')))
-    if (-not $tray) { return $null }
-    $bc = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::Button)
-    foreach ($b in $tray.FindAll($TS::Descendants, $bc)) {
-        if ($b.Current.ClassName -eq 'SystemTray.NormalButton' -and $b.Current.Name -like 'Lingwu SysMon*') { return $b }
-    }
-    return $null
+    return (Test-ToolboxTrayIconPresent)
 }
 
 # ---- ini 存取（只碰 CloseAction 一个键）----
-$IniPath = Join-Path $env:APPDATA 'LingwuSysMon\settings.ini'
+$IniPath = Join-Path $env:APPDATA 'LingwuToolbox\settings.ini'
 
 function Get-CloseAction {
     if (-not (Test-Path $IniPath)) { return 0 }
@@ -292,7 +287,7 @@ Write-Output ''
 Write-Output '=== T7: 隐藏态下再启动一份，第二份应把第一份唤回 ==='
 $second = Start-Process $Exe -PassThru
 Start-Sleep -Seconds 8
-$stillOne = @(Get-Process LingwuSysmon -ErrorAction SilentlyContinue |
+$stillOne = @(Get-Process LingwuToolbox -ErrorAction SilentlyContinue |
               Where-Object { $_.Id -ne $IgnorePid })
 Assert-True 'T7 单实例仍成立（只有一份进程）' ($stillOne.Count -eq 1) "count=$($stillOne.Count)"
 Assert-True 'T7 第一份窗口被唤回且可见' ([bool]([CF]::IsWindowVisible($hwnd)))
@@ -303,17 +298,24 @@ Write-Output ''
 Write-Output '=== T4: 托盘左键 Invoke 应把窗口唤回并还原 ==='
 $hwnd = Get-Hwnd $procId
 if ($hwnd -eq [IntPtr]::Zero) { $hwnd = [IntPtr]::new([int]$p.MainWindowHandle) }
-$tray = Find-TrayButton
-if ($tray) {
-    try {
-        $tp = $tray.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-        $tp.Invoke()
-    } catch { Write-Output "  [WARN] 托盘 Invoke 抛异常: $($_.Exception.Message)" }
-} else {
-    Write-Output '  [FAIL] 找不到托盘按钮'
+# 托盘图标可能在 Win11 的 "^" 溢出浮窗里，而且 Invoke 一次不一定就能把窗口
+# 唤回来 —— 与 close-hide-dlg.ps1 一样做重试。
+#
+# 【为什么不能只 Invoke 一次就断言】
+# 首版是「找到就 Invoke 一次，等 4 秒，然后断言窗口可见」，实测必挂：
+# 溢出浮窗里的按钮 Invoke 后 Explorer 关闭浮窗、图标退回浮窗外，第二次
+# Invoke 需要重新打开浮窗，间隔太长时序就断了。
+$restored = $false
+for ($i = 1; $i -le 8 -and -not $restored; $i++) {
+    if (Invoke-ToolboxTrayButton) { Start-Sleep -Seconds 2 }
+    if ([bool]([CF]::IsWindowVisible($hwnd))) { $restored = $true; break }
+    Start-Sleep -Milliseconds 800
+}
+if (-not $restored) {
+    Write-Output '  [FAIL] 托盘按钮未找到，或 Invoke 8 次后窗口仍未可见'
     $script:Fail++
 }
-Start-Sleep -Seconds 4
+Start-Sleep -Seconds 2
 Assert-True 'T4 窗口已重新可见' ([bool]([CF]::IsWindowVisible($hwnd)))
 Assert-True 'T4 窗口未处于最小化' (-not [bool]([CF]::IsIconic($hwnd)))
 
@@ -355,7 +357,7 @@ $gone = Wait-AppGone $procId 20
 Assert-True 'T5 进程已结束' $gone
 Assert-True 'T5 ini CloseAction 落成 2' ((Get-CloseAction) -eq 2) "actual=$(Get-CloseAction)"
 Start-Sleep -Seconds 3
-Assert-True 'T5 托盘图标已撤销' ($null -eq (Find-TrayButton))
+Assert-True 'T5 托盘图标已撤销' (-not (Find-TrayButton))
 Write-Output ''
 
 # ============================================================ T6

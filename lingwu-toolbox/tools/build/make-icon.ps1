@@ -1,4 +1,4 @@
-# make-icon.ps1 -- generate resources/app.ico for lingwu-service-manager.
+# make-icon.ps1 -- generate resources/app.ico for the Lingwu toolbox.
 #
 # Why a script instead of a committed binary blob: the icon is geometry, not
 # artwork. Keeping the construction here means the .ico can be regenerated at
@@ -6,14 +6,12 @@
 # squinting at a binary.
 #
 # Run with pwsh (not Windows PowerShell):
-#   pwsh -NoProfile -File .\tools\make-icon.ps1
-#   pwsh -NoProfile -File .\tools\make-icon.ps1 -Preview
+#   pwsh -NoProfile -File .\tools\build\make-icon.ps1
+#   pwsh -NoProfile -File .\tools\build\make-icon.ps1 -Preview
 #
-# Design brief: it has to read as "the other LingwuLab tool" at a glance.
-# lingwu-sysmon is a dark navy rounded square with an amber arc, so this one
-# keeps the exact same plate and accent and swaps the mark for a cog -- which
-# is also the metaphor Windows itself uses for services. Colours were sampled
-# from the sysmon icon rather than guessed:
+# Design brief: it has to read as a system tool at a glance. A dark navy
+# rounded square with an amber arc -- the plate and accent the LingwuLab
+# tools share -- carrying a mark that works at 16 px. Colours:
 #   plate  #1E222B      accent #F5B942
 #
 # This file is pure ASCII (repo rule for .ps1).
@@ -28,11 +26,14 @@ param(
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
+# This file lives in tools/build/, which is two levels below the project
+# root -- the same depth as tools/monitor/ and tools/service/. So the root
+# is two Split-Path hops up, not one.
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$root = Split-Path -Parent $here
+$root = Split-Path -Parent (Split-Path -Parent $here)
 $outIco = Join-Path $root 'resources\app.ico'
 
-# Same size ladder lingwu-sysmon ships. 16 px is the one that actually has to
+# Same size ladder lingwu-toolbox ships. 16 px is the one that actually has to
 # survive, because that is what Explorer's small-icons view and the taskbar
 # unpinned state both use.
 $sizes = @(16, 24, 32, 48, 64, 128, 256)

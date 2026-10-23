@@ -32,28 +32,25 @@ param(
 #     也不点「确定」（那会改 ini）。
 #   * 断言全部走 UIA 读回的状态 + 进程存活 + 私有内存，不靠肉眼。
 #
-# 用法：pwsh -NoProfile -File .\tools\uisettings2.ps1
+# 用法：pwsh -NoProfile -File .\tools\monitor\settings-reopen.ps1
 # （本文件含中文，必须用 pwsh；Windows PowerShell 5.1 按 ANSI 936 读会碎掉。）
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
+Write-Host "exe = $Exe"
 
 # UIA 程序集必须显式加载 —— Windows PowerShell / PowerShell 7 都不会自动
 # 带上 UIAutomationClient，漏了会报「找不到类型 [AutomationElement]」。
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (-not $Exe) {
-    $Exe = Join-Path (Split-Path -Parent $scriptDir) 'dist\Release\LingwuSysmon.exe'
-}
-if (-not (Test-Path $Exe)) { Write-Host "EXE NOT FOUND: $Exe"; exit 1 }
-Write-Host "exe = $Exe"
-
 $AE = [System.Windows.Automation.AutomationElement]
 $TS = [System.Windows.Automation.TreeScope]
 $BT = [System.Windows.Automation.ControlType]::Button
 
-$Ini = Join-Path $env:APPDATA 'LingwuSysMon\settings.ini'
+$Ini = Join-Path $env:APPDATA 'LingwuToolbox\settings.ini'
 $IniBackup = "$Ini.set2bak"
 
 # 保留用户原始 ini，测完还原。绝不在用户机器上留下我们编的值。
@@ -61,7 +58,7 @@ $hadIni = Test-Path $Ini
 if ($hadIni) { Copy-Item $Ini $IniBackup -Force }
 Write-Host ("ini exists before test = $hadIni")
 
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 $p = Start-Process $Exe -PassThru
@@ -69,7 +66,10 @@ Write-Host "launched pid=$($p.Id)"
 
 function Get-TopWins($pid_) {
     $cond = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $pid_)
-    return $AE::RootElement.FindAll($TS::Children, $cond)
+    # The comma stops PowerShell from unrolling the collection: with exactly
+    # one window in the tree, an unrolled return hands back the element
+    # itself, and $w.Count then fails with "property Count not found".
+    return ,$AE::RootElement.FindAll($TS::Children, $cond)
 }
 
 function Get-MainWin($pid_) {
@@ -276,7 +276,7 @@ if (Test-Path $IniBackup) {
     Write-Host 'ini backup removed'
 }
 
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 if ($fail -gt 0) {
     Write-Host "RESULT: FAIL ($fail problem(s))"

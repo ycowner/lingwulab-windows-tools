@@ -4,6 +4,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -21,7 +24,7 @@ $TS = [System.Windows.Automation.TreeScope]
 $PW = 0x00000002
 $WM_CONTEXTMENU = 0x007B
 
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 $p = Start-Process $Exe -PassThru
@@ -56,7 +59,9 @@ function Find-ByTypeInProc($pid_, $controlType) {
     $c1 = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $controlType)
     $c2 = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $pid_)
     $and = New-Object System.Windows.Automation.AndCondition($c1, $c2)
-    return $AE::RootElement.FindAll($TS::Descendants, $and)
+    # Comma prevents PowerShell from unrolling the collection (see the note
+    # in Get-TopWins): an unrolled single-element result loses .Count.
+    return ,$AE::RootElement.FindAll($TS::Descendants, $and)
 }
 
 function Shot([string]$path) {

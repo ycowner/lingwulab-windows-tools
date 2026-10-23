@@ -1,15 +1,18 @@
 param(
     [string]$Exe,
     [int]$Seconds = 180,
-    [string]$OutCsv = "$env:TEMP\lingsysmon_mem.csv"
+    [string]$OutCsv = "$env:TEMP\lingwu_toolbox_mem.csv"
 )
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 
 # 采集策略：**全部写进数组，结束时一次性输出 + 落盘**。
 #
 # 为什么不逐秒 Write-Output：后台任务的输出是流式的，读取端一有新行就返回，
 # 于是每次轮询只能推进几秒，180 秒的观测要几十次轮询。改成汇总输出后，
 # 只需要等一次完成通知。
-Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 $p = Start-Process $Exe -PassThru

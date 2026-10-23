@@ -14,9 +14,9 @@
 #
 # 【隐藏/显示走真实用户路径】
 # 不是直接调 API，而是：PostMessage(WM_CLOSE) → Invoke「最小化到托盘」→ 隐藏；
-# 托盘 InvokePattern → 显示。这样测到的才��用户实际会经历的那条路。
+# 托盘 InvokePattern → 显示。这样测到的才是用户实际会经历的那条路。
 #
-# 用法：pwsh -NoProfile -File .\tools\closeab.ps1
+# 用法：pwsh -NoProfile -File .\tools\monitor\close-ab.ps1
 
 param(
     [string]$Exe = '',
@@ -24,13 +24,15 @@ param(
     [int]$Settle = 120,
     [int]$Tail = 120,
     [int]$Cycles = 5,
-    [string]$OutCsv = "$env:TEMP\lingsysmon_closeab.csv"
+    [string]$OutCsv = "$env:TEMP\lingwu_toolbox_closeab.csv"
 )
 
-# exe 路径按脚本位置解析，项目目录改名后不必再改这里。
-if (-not $Exe) { $Exe = Join-Path $PSScriptRoot '..\dist\Release\LingwuSysmon.exe' }
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\common\common.ps1')
+. (Join-Path $PSScriptRoot '..\common\tray.ps1')
+Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
+$Exe = Resolve-ToolboxExe $Exe
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 
@@ -49,7 +51,7 @@ public class AB {
 '@
 
 function Stop-App {
-    Get-Process LingwuSysmon -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
+    Get-Process LingwuToolbox -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne 37480 } |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 }
@@ -78,14 +80,7 @@ function Wait-El([int]$procId, $controlType, [string]$name, [int]$sec = 15) {
     return $null
 }
 function Find-TrayButton {
-    $tray = $AE::RootElement.FindFirst($TS::Children,
-        (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'Shell_TrayWnd')))
-    if (-not $tray) { return $null }
-    $bc = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::Button)
-    foreach ($b in $tray.FindAll($TS::Descendants, $bc)) {
-        if ($b.Current.ClassName -eq 'SystemTray.NormalButton' -and $b.Current.Name -like 'Lingwu SysMon*') { return $b }
-    }
-    return $null
+    return (Test-ToolboxTrayIconPresent)
 }
 
 # 采样一条
@@ -116,13 +111,13 @@ function Start-App([string]$exe) {
 }
 
 # ---- 关掉 trace：它每次 ListCommit 都写文件，会污染内存曲线 ----
-$mdir = Join-Path $env:LOCALAPPDATA 'LingwuSysMon'
+$mdir = Join-Path $env:LOCALAPPDATA 'LingwuToolbox'
 if (Test-Path (Join-Path $mdir 'trace.on')) {
     Move-Item (Join-Path $mdir 'trace.on') (Join-Path $mdir 'trace.on.disabled') -Force
     Write-Output '[setup] trace.on 已临时停用（避免文件 I/O 污染内存曲线）'
 }
 
-$IniPath = Join-Path $env:APPDATA 'LingwuSysMon\settings.ini'
+$IniPath = Join-Path $env:APPDATA 'LingwuToolbox\settings.ini'
 Stop-App
 if (Test-Path $IniPath) {
     (Get-Content $IniPath) -replace '^\s*CloseAction\s*=\s*\d+', 'CloseAction=0' | Set-Content $IniPath -Encoding UTF8
@@ -170,8 +165,7 @@ for ($c = 1; $c -le $Cycles; $c++) {
     $t++
     if (-not (Sample $b.proc.Id 'exp' $t "hidden$c")) { break }
     # --- 显示 ---
-    $tray = Find-TrayButton
-    if ($tray) { $tray.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() }
+    [void](Invoke-ToolboxTrayButton)
     Start-Sleep -Seconds 3
     $t++
     if (-not (Sample $b.proc.Id 'exp' $t "show$c")) { break }

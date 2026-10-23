@@ -2,6 +2,13 @@
 #
 # Rules that are not negotiable here (each one was learned the hard way):
 #
+#  0. ALWAYS run these ELEVATED. The toolbox is requireAdministrator, and
+#     UI Automation cannot see across an integrity-level boundary: the same
+#     query against the same window returns 451 descendants from an elevated
+#     client and 4 from a non-elevated one. Call Require-Elevated (see
+#     elevate.ps1, dot-sourced below) right after dot-sourcing this file and
+#     it takes care of that.
+#
 #  1. ALWAYS run these under pwsh, not Windows PowerShell 5.1. 5.1's COM
 #     interop binds UIAutomationClient differently and the AndCondition
 #     construction below silently degrades to a single condition.
@@ -29,6 +36,11 @@
 
 Set-StrictMode -Version Latest
 
+# The non-UI shared bootstrap (project root, exe resolution, elevation)
+# lives next to this file so that scripts which do not need UI Automation
+# can still use it.
+. (Join-Path $PSScriptRoot 'common.ps1')
+
 function Initialize-Uia {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
@@ -45,21 +57,23 @@ $script:TS = [System.Windows.Automation.TreeScope]
 $script:CT = [System.Windows.Automation.ControlType]
 $script:UiaFailures = 0
 
-function Stop-App([string]$ProcessName) {
-    Get-Process $ProcessName -ErrorAction SilentlyContinue |
-        Stop-Process -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 800
-}
-
-function Start-App([string]$Exe) {
-    if (-not (Test-Path $Exe)) { throw "Exe not found: $Exe" }
-    $p = Start-Process $Exe -PassThru
-    Write-Host "launched pid=$($p.Id)"
-    return $p
-}
+# NOTE: Stop-App / Start-App live in common.ps1, not here. They are process
+# helpers, and scripts that never touch UI Automation still need them.
 
 # Top-level window of a process, retried until it shows up.
+#
+# The toolbox has more than one top-level window in the same process (main,
+# settings, create-service), so "the first Window with this pid" is not
+# necessarily the one the caller means. The main window is identified by the
+# nav pill it owns: NavServiceButton lives in the shell's title bar, so it
+# is present whichever module is showing. Only if that probe fails do we
+# fall back to "first window with this pid".
 function Get-AppWindow([int]$ProcessId, [int]$TimeoutSec = 45) {
+    try {
+        return Get-AppWindowByProbe $ProcessId 'NavServiceButton' ([Math]::Min($TimeoutSec, 20))
+    } catch {
+        # Fall through to the generic search below.
+    }
     $cond = New-Object System.Windows.Automation.AndCondition(
         (New-Object System.Windows.Automation.PropertyCondition(
             $script:AE::ControlTypeProperty, $script:CT::Window)),
@@ -78,6 +92,51 @@ function Get-AppWindow([int]$ProcessId, [int]$TimeoutSec = 45) {
         Start-Sleep -Milliseconds 300
     }
     throw "No window for pid $ProcessId after $TimeoutSec s."
+}
+
+# Which module the shell is currently showing.
+#
+# Both pages are constructed once and kept resident; switching only flips
+# Visibility. A collapsed page is NOT in the UI Automation tree at all
+# (measured: after switching to the service page, ProcessList and
+# AggregateSwitch stop resolving while ServiceList and FilterBox appear),
+# so "is ProcessList reachable?" is a reliable way to tell the two apart.
+#
+# This also settles the AutomationId collision between the two pages:
+# SearchBox, HeaderName, StatusLeft and StatusRight exist in both, but only
+# one of the two pages is ever in the tree, so a plain AutomationId lookup
+# is unambiguous.
+function Get-CurrentModule($Win) {
+    $probe = New-Object System.Windows.Automation.AndCondition(
+        (New-Object System.Windows.Automation.PropertyCondition(
+            $script:AE::ProcessIdProperty, [int]$Win.Current.ProcessId)),
+        (New-Object System.Windows.Automation.PropertyCondition(
+            $script:AE::AutomationIdProperty, 'ProcessList')))
+    if ($Win.FindFirst($script:TS::Descendants, $probe)) { return 'Monitor' }
+    return 'Service'
+}
+
+# Switch the shell to a module and wait for the page to come up.
+#
+# The nav pill is a Button, so InvokePattern is the right way to press it.
+# Clicking the pill of the module that is already showing is harmless --
+# ShowModule only flips Visibility, it never rebuilds the page -- but the
+# check below keeps the scripts from doing pointless work.
+function Switch-Module($Win, [ValidateSet('Monitor', 'Service')][string]$Module) {
+    $current = Get-CurrentModule $Win
+    if ($current -eq $Module) {
+        Write-Host "  already on the $Module page"
+        return
+    }
+    $btnId = if ($Module -eq 'Service') { 'NavServiceButton' } else { 'NavMonitorButton' }
+    $btn = Get-ById $Win $btnId
+    Invoke-El $btn $btnId
+    Start-Sleep -Milliseconds 900
+    $now = Get-CurrentModule $Win
+    if ($now -ne $Module) {
+        throw ("Switched to the $Module page but the tree still shows $now.")
+    }
+    Write-Host "  on the $Module page"
 }
 
 # A specific top-level window of a process, identified by a control it owns.
@@ -108,6 +167,40 @@ function Get-AppWindowByProbe([int]$ProcessId, [string]$ProbeId, [int]$TimeoutSe
     throw "No window of pid $ProcessId contains '$ProbeId' after $TimeoutSec s."
 }
 
+# The settings window, but only while it is actually on screen.
+#
+# The settings window is HIDDEN, not destroyed, when it is closed (see
+# SettingsWindow::HideSelf -- destroying it would leak native resources on
+# every round). A hidden window can still be reachable through UI
+# Automation, so "find the settings window" is not the same question as
+# "is the settings window open". Scripts that open it have to be able to
+# tell the two apart, hence the visibility check.
+#
+# The probe is CancelButton, which only the settings window owns.
+function Find-VisibleSettingsWindow([int]$ProcessId, [int]$MainHwnd, [int]$TimeoutSec = 15) {
+    $winCond = New-Object System.Windows.Automation.AndCondition(
+        (New-Object System.Windows.Automation.PropertyCondition(
+            $script:AE::ControlTypeProperty, $script:CT::Window)),
+        (New-Object System.Windows.Automation.PropertyCondition(
+            $script:AE::ProcessIdProperty, $ProcessId)))
+    $probe = New-Object System.Windows.Automation.PropertyCondition(
+        $script:AE::AutomationIdProperty, 'CancelButton')
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $wins = $script:AE::RootElement.FindAll($script:TS::Children, $winCond)
+        for ($i = 0; $i -lt $wins.Count; $i++) {
+            if ([int]$wins[$i].Current.NativeWindowHandle -eq $MainHwnd) { continue }
+            if (-not $wins[$i].FindFirst($script:TS::Descendants, $probe)) { continue }
+            $b = $wins[$i].Current.BoundingRectangle
+            if ($b.Width -gt 0 -and $b.Height -gt 0 -and -not $wins[$i].Current.IsOffscreen) {
+                return $wins[$i]
+            }
+        }
+        Start-Sleep -Milliseconds 300
+    }
+    return $null
+}
+
 # A ContentDialog in the same process, found by probing rather than by title.
 #
 # WinUI's ContentDialog is hosted in its own popup, so it may or may not be a
@@ -126,7 +219,11 @@ function Get-Dialog($Root, [int]$TimeoutSec = 15) {
     # so "a window with buttons" matches either of them and then reports their
     # toolbar as if it were the dialog's contents. Exclude both by the one
     # control each is uniquely known by.
-    $exclude = @('ServiceList', 'ServiceNameBox')
+    #
+    # The main window is excluded by NavServiceButton, which lives in the
+    # shell's title bar and is therefore present whichever module is
+    # showing; the list ids are there as a belt-and-braces second marker.
+    $exclude = @('NavServiceButton', 'ServiceList', 'ProcessList', 'ServiceNameBox')
     $selfConds = @()
     foreach ($id in $exclude) {
         $selfConds += New-Object System.Windows.Automation.PropertyCondition(
