@@ -38,6 +38,13 @@ constexpr UINT    kTrayUid     = 1;
 constexpr UINT    WM_TRAY_CB   = WM_APP + 0x2F;
 constexpr wchar_t kWndClass[]  = L"LingwuToolbox_TrayHost";
 
+// 提升到可见区的重试用定时器。
+// id 1 是 NIM_ADD 失败后的重试（见 TrayHostProc），id 2 是「IsPromoted 写入」
+// 的重试 —— 两者原因完全不同，不要混用同一个 id。
+constexpr UINT    kPromoteTimerId  = 2;
+constexpr UINT    kPromoteRetryMs  = 400;
+constexpr int     kPromoteMaxTries = 12;   // 约 4.8 秒
+
 // NOTIFYICON_VERSION_4 起 Explorer 用的通知码。旧码也一并接：
 // 任何一套漏掉都会在某版 Windows 上表现成「托盘图标点了没反应」。
 // 这两个宏在 shellapi.h 里已有定义，这里不重复定义（重复会 C2059）。
@@ -50,11 +57,24 @@ HICON           g_icon      = nullptr;    // 自己 LoadImage 出来的，退出
 bool            g_iconOwned = false;
 TrayCallbacks   g_cb;
 
+// 提升重试已经试了多少次。
+int             g_promoteTries = 0;
+
+// 提升到可见区成没成。
+// g_promoted       -- 已经提到可见区了（不用再提示用户去 ^ 里找）
+// g_promotionSettled -- 提升这件事已经有结论了（成功或已放弃）
+//                    没结论之前不能弹「图标在 ^ 里」的提示 —— 提升成功的机器上
+//                    图标就在可见区，那时候弹这个提示是错的。
+bool            g_promoted        = false;
+bool            g_promotionSettled = false;
+
 // ---------------------------------------------------------------- 自启动提示
 // trayHintShown 在 ini 里，所以这里直接读写 core::Settings。
 // 托盘模块与主界面共用同一份设置文件，没有第二份真相。
 void MaybeShowTrayHintImpl() {
     if (!g_added) return;
+    // 提升成功了，图标就在可见区，不用提示用户去 ^ 里翻。
+    if (g_promoted) return;
     lingwu::core::Settings s;
     if (!lingwu::core::LoadSettings(s)) return;
     if (s.trayHintShown) return;
@@ -98,15 +118,36 @@ bool SubKeyMatchesSelf(const wchar_t* subKey, const wchar_t* self) {
 }
 
 // 写 IsPromoted=1 把所有属于本程序的登记项提常驻。认不认都不影响正确性。
-void TryPromoteTrayIcon() {
+//
+// 返回值：
+//   0 = 一条属于本程序的登记项都还没找到（Explorer 还没建） —— 调用方要重试
+//   1 = 找到了，而且已经是 IsPromoted=1 —— 不用动，也不用让 Explorer 重读
+//   2 = 找到了并写进了 IsPromoted=1 —— 需要让 Explorer 重新读一次才会生效
+//
+// 【为什么必须重试 —— 这是实测踩到的真缺陷】
+//   Explorer 建 NotifyIconSettings\<哈希> 这条登记项是**异步**的：
+//   NIM_ADD 返回时它还不存在，要过一小会儿才建好。
+//   所以「NIM_ADD 之后立刻调一次本函数」在**首次运行**的机器上必然一条都找不到
+//   （那台机器本来就没有这条登记项），静默什么也没做 ——
+//   结果图标被留在 Win11 的 ^ 隐藏图标区，用户在任务栏上根本看不到。
+//   实测：注册表里没有对应登记项时，函数返回「找到 0 条」，
+//   托盘图标只出现在 `TopLevelWindowForOverflowXamlIsland` 那个溢出浮窗里，
+//   可见区 `Shell_TrayWnd` 里一个也没有。
+//   而机器上留着一条旧登记项时，同样的代码就能把图标提到可见区 ——
+//   这个「有没有旧登记项」的差异，正好说明问题出在时序而不是逻辑。
+//
+//   所以这里返回 0 时不能放弃，要由定时器接着试（见 kPromoteTimerId）。
+int TryPromoteTrayIcon() {
     wchar_t self[MAX_PATH] = {0};
-    if (!SelfPath(self, MAX_PATH)) return;
+    if (!SelfPath(self, MAX_PATH)) return 0;
 
     const wchar_t* rootPath = L"Control Panel\\NotifyIconSettings";
     HKEY root = nullptr;
     if (RegOpenKeyExW(HKEY_CURRENT_USER, rootPath, 0, KEY_READ, &root) != ERROR_SUCCESS)
-        return;
+        return 0;
 
+    int found = 0;
+    bool wrote = false;
     for (DWORD i = 0;; ++i) {
         wchar_t name[128] = {0};
         DWORD cbName = ARRAYSIZE(name);
@@ -117,6 +158,21 @@ void TryPromoteTrayIcon() {
         wchar_t sub[256] = {0};
         if (swprintf_s(sub, ARRAYSIZE(sub), L"%s\\%s", rootPath, name) < 0) continue;
         if (!SubKeyMatchesSelf(sub, self)) continue;
+        found++;
+
+        // 已经是 1 就别再写 —— 写了也算「需要 Explorer 重读」的话，
+        // 会白白多一次 NIM_DELETE + NIM_ADD 的图标闪烁。
+        // RegQueryValueExW 的签名是 (hKey, lpValueName, dwReserved, lpType,
+        // lpData, lpcbData) —— 六个参数，子键名在 hKey 里，不再单独传。
+        DWORD promoted = 0;
+        DWORD cbValue = sizeof(promoted);
+        DWORD type = 0;
+        const LSTATUS got = RegQueryValueExW(
+            HKEY_CURRENT_USER, L"IsPromoted", 0, &type,
+            reinterpret_cast<BYTE*>(&promoted), &cbValue);
+        if (got == ERROR_SUCCESS && type == REG_DWORD && promoted == 1) {
+            continue;
+        }
 
         HKEY k = nullptr;
         if (RegOpenKeyExW(HKEY_CURRENT_USER, sub, 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
@@ -124,9 +180,45 @@ void TryPromoteTrayIcon() {
             RegSetValueExW(k, L"IsPromoted", 0, REG_DWORD,
                            reinterpret_cast<const BYTE*>(&one), sizeof(one));
             RegCloseKey(k);
+            wrote = true;
         }
     }
     RegCloseKey(root);
+
+    if (found == 0) return 0;
+    return wrote ? 2 : 1;
+}
+
+// 让 Explorer 重新读一次 IsPromoted。
+//
+// 【为什么写完还得再 NIM_ADD 一次】
+//   Explorer 是在**图标被加入的那一刻**读 IsPromoted 的。
+//   之后我们再把那个值改成 1，Explorer 不知道，它照旧把图标摆在溢出区。
+//   所以必须先撤（NIM_DELETE）再加（NIM_ADD），让它重来一遍。
+void RefreshTrayIconAfterPromote() {
+    if (!g_host || !IsWindow(g_host)) return;
+
+    NOTIFYICONDATAW del = g_nid;
+    del.uFlags = 0;
+    Shell_NotifyIconW(NIM_DELETE, &del);
+    g_added = false;
+
+    g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    g_added = (Shell_NotifyIconW(NIM_ADD, &g_nid) != FALSE);
+    if (g_added) {
+        g_nid.uVersion = NOTIFYICON_VERSION_4;
+        Shell_NotifyIconW(NIM_SETVERSION, &g_nid);
+    } else {
+        // 【为什么这里必须兜住】
+        // 上面是先撤再加，所以万一这一次的 NIM_ADD 失败，图标就**真的没了** ——
+        // 而它本来是有的。绝不能让一次「提升」把图标搞丢。
+        // 所以失败时起一个重试定时器，走的是 NIM_ADD 失败的老路径
+        // （id 1 的处理器会调 RecreateTrayIcon 重新注册）。
+        LINGWU_TRACE("tray: refresh after promotion failed err=%lu, scheduling a retry",
+                     GetLastError());
+        SetTimer(g_host, 1, 1500, nullptr);
+    }
+    LINGWU_TRACE("tray: refreshed after promotion, added=%d", g_added ? 1 : 0);
 }
 
 // ---------------------------------------------------------------- 菜单
@@ -246,6 +338,31 @@ LRESULT CALLBACK TrayHostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (wp == 1) {
                 KillTimer(hwnd, 1);
                 if (!g_added) RecreateTrayIcon();
+                return 0;
+            }
+            // 「把图标提到可见区」的重试。Explorer 建那条登记项是异步的，
+            // 第一次找不到是正常的，所以要一直试到它出现为止 ——
+            // 见 TryPromoteTrayIcon 上面的长注释。
+            if (wp == kPromoteTimerId) {
+                const int r = TryPromoteTrayIcon();
+                if (r != 0) {
+                    // r == 2 表示我们刚写进去 IsPromoted=1，
+                    // Explorer 只在图标被加入的那一刻读这个值，所以要重新加一次。
+                    if (r == 2) RefreshTrayIconAfterPromote();
+                    g_promoted = true;
+                    g_promotionSettled = true;
+                    KillTimer(hwnd, kPromoteTimerId);
+                    LINGWU_TRACE("tray: promoted to the visible tray");
+                    return 0;
+                }
+                if (++g_promoteTries >= kPromoteMaxTries) {
+                    KillTimer(hwnd, kPromoteTimerId);
+                    g_promotionSettled = true;
+                    LINGWU_TRACE("tray: promote gave up after %d tries; the icon stays in the overflow",
+                                 g_promoteTries);
+                    // 提升没成功，图标多半留在 ^ 溢出区 —— 这时候才提示用户去哪儿找。
+                    MaybeShowTrayHintImpl();
+                }
                 return 0;
             }
             break;
@@ -373,7 +490,14 @@ bool InitTrayIcon(const TrayCallbacks& cb) {
         LINGWU_TRACE("tray: NIM_ADD ok, SETVERSION=%d -> version=%u", ok ? 1 : 0, g_version);
         // 必须在 NIM_ADD 之后：NotifyIconSettings 下的登记项是 Explorer 收到
         // NIM_ADD 才建的，之前查不到任何东西。
-        TryPromoteTrayIcon();
+        //
+        // 而且那条登记项是**异步**建的 —— NIM_ADD 返回时它往往还不存在。
+        // 所以这里不是「试一次」，而是起一个定时器一直试到它出现为止。
+        // 详见 TryPromoteTrayIcon 上面的长注释。
+        g_promoteTries = 0;
+        g_promoted = false;
+        g_promotionSettled = false;
+        SetTimer(g_host, kPromoteTimerId, kPromoteRetryMs, nullptr);
     } else {
         g_version = 0;
         // Explorer 未就绪（典型：开机自启抢跑）。1.5 秒后重试一次。
@@ -422,7 +546,13 @@ void ShutdownTrayIcon() {
 
 bool TrayIconAdded() { return g_added; }
 
-void MaybeShowTrayHint() { MaybeShowTrayHintImpl(); }
+void MaybeShowTrayHint() {
+    // 提升到可见区这件事还没出结论之前不提示 ——
+    // 提升成功的机器上图标就在可见区，那时候提示「图标在 ^ 里」是错的。
+    // 放弃提升时由定时器那边自己调 MaybeShowTrayHintImpl()。
+    if (!g_promotionSettled) return;
+    MaybeShowTrayHintImpl();
+}
 
 void OnTaskbarCreated() {
     // Explorer 重启：登记全部失效，必须重新 NIM_ADD。

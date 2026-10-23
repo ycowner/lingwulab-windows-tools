@@ -29,6 +29,22 @@ constexpr DWORD kWaitMs = 5000;
 // 那个 HWND 可能是系统复用出来的另一个窗口的句柄。
 constexpr DWORD kHwndMapSize = sizeof(HWND) * 2;
 
+// 共享内存的句柄**必须留到进程结束**。
+//
+// 【为什么 —— 这条曾是一个真缺陷，实测才发现】
+//   命名内核对象的寿命只取决于「还有几个句柄开着」。最后一个句柄一关，
+//   对象就被释放 —— 对 `CreateFileMappingW(INVALID_HANDLE_VALUE, ...)`
+//   这种页文件支撑的命名映射也一样。
+//   原实现写完 HWND 就 `CloseHandle(m)`，于是**共享段当场消失**：
+//   第二个实例 `OpenFileMappingW` 直接失败（实测 err=2 = ERROR_FILE_NOT_FOUND），
+//   于是它读不到任何 HWND，打印「second instance: no valid hwnd in shared map,
+//   exiting quietly」就退出了 —— **第一份实例收进托盘后再启动一份，什么都不会发生**，
+//   而且没有任何报错。
+//   原注释写的是「关掉它不影响已建立的映射，段对象由内核维持到最后一个句柄关闭
+//   —— 也就是本进程退出」：前半句和后半句是矛盾的，前半句是错的。
+//   正确做法就是后半句说的：**把句柄一直留着**。
+HANDLE g_hwndMap = nullptr;
+
 HANDLE CreateMutexBestEffort(bool& alreadyExists) {
     alreadyExists = false;
     HANDLE h = ::CreateMutexW(nullptr, TRUE, kMutexNameGlobal);
@@ -151,28 +167,36 @@ bool AcquireSingleInstance(HANDLE& mutex, bool& alreadyRunning) {
 }
 
 void PublishMainHwnd(HWND hwnd) {
-    HANDLE m = CreateMappingBestEffort();
-    if (!m) {
-        LINGWU_TRACE("PublishMainHwnd: CreateFileMapping failed err=%lu",
-                     (unsigned long)::GetLastError());
-        return;
+    // 句柄只建一次，之后一直留着（见 g_hwndMap 上面的长注释）。
+    if (!g_hwndMap) {
+        g_hwndMap = CreateMappingBestEffort();
+        if (!g_hwndMap) {
+            LINGWU_TRACE("PublishMainHwnd: CreateFileMapping failed err=%lu",
+                         (unsigned long)::GetLastError());
+            return;
+        }
     }
-    void* view = ::MapViewOfFile(m, FILE_MAP_WRITE, 0, 0, kHwndMapSize);
+    void* view = ::MapViewOfFile(g_hwndMap, FILE_MAP_WRITE, 0, 0, kHwndMapSize);
     if (view) {
         static_cast<HWND*>(view)[0] = hwnd;
         static_cast<HWND*>(view)[1] = hwnd;   // 双份：校验用
         ::UnmapViewOfFile(view);
     }
-    // 映射对象句柄刻意**不保留**：关掉它不影响已建立的映射，
-    // 段对象由内核维持到最后一个句柄关闭 —— 也就是本进程退出。
-    ::CloseHandle(m);
+    // **这里不能 CloseHandle** —— 关掉唯一的句柄，命名映射就当场消失，
+    // 第二个实例再也打不开它（实测 OpenFileMappingW 直接 err=2）。
+    // 句柄留给进程退出时由内核回收。
     LINGWU_TRACE("single instance: published main hwnd=%p", (void*)hwnd);
 }
 
 void ClearPublishedHwnd() {
-    HANDLE m = ::OpenFileMappingW(FILE_MAP_WRITE, FALSE, kMapNameGlobal);
+    // 用自己留着的那个句柄去清，不要另外 Open 一个 ——
+    // 万一这个进程是唯一持有者，Open 出来的句柄反而会把映射的生命周期搞乱。
+    HANDLE m = g_hwndMap;
     if (!m) {
-        m = ::OpenFileMappingW(FILE_MAP_WRITE, FALSE, kMapNameLocal);
+        m = ::OpenFileMappingW(FILE_MAP_WRITE, FALSE, kMapNameGlobal);
+        if (!m) {
+            m = ::OpenFileMappingW(FILE_MAP_WRITE, FALSE, kMapNameLocal);
+        }
     }
     if (!m) return;
     void* view = ::MapViewOfFile(m, FILE_MAP_WRITE, 0, 0, kHwndMapSize);
@@ -181,7 +205,12 @@ void ClearPublishedHwnd() {
         static_cast<HWND*>(view)[1] = nullptr;
         ::UnmapViewOfFile(view);
     }
-    ::CloseHandle(m);
+    // g_hwndMap 是本进程持有的，关掉它等于让这一份实例不再维持这个映射；
+    // 但如果关掉，别的进程可能正在读 —— 所以这里只在「不是自己留着的那个」
+    // 情况下才关。
+    if (m != g_hwndMap) {
+        ::CloseHandle(m);
+    }
 }
 
 HWND FindOtherInstanceWindow() {

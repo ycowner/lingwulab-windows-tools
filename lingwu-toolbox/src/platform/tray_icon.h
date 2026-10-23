@@ -26,9 +26,11 @@
 // Win11 默认把新托盘图标收进任务栏右侧的 ^ 溢出区，用户看不到就等于没有图标。
 // 公开 API 没有「把自己提到可见区」这个能力。唯一能碰的是 Explorer 写在
 // HKCU\Control Panel\NotifyIconSettings\<哈希>\IsPromoted 的未公开 DWORD。
-// 写它成本极低、认不认都不影响正确性，所以试一次，但不依赖它 ——
+// 写它成本极低、认不认都不影响正确性，所以试一下，但不依赖它 ——
 // 真正兜底的是首次运行的一次性提示（MaybeShowTrayHint）。
-// 注意：该登记项是 Explorer 收到 NIM_ADD **之后**才建的，所以必须先注册再提升。
+// 注意：该登记项是 Explorer 收到 NIM_ADD **之后**才建的，而且是**异步**建的，
+// 所以必须先注册再提升，而且不能只试一次 —— 见 tray_icon.cpp 里
+// TryPromoteTrayIcon 上面的长注释。
 namespace platform {
 
 // 托盘菜单里的模块。
