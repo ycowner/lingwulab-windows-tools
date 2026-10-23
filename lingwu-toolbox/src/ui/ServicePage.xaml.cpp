@@ -1,16 +1,16 @@
 #include "pch.h"
-#include "ServiceMainWindow.xaml.h"
+#include "ServicePage.xaml.h"
 // XAML 生成代码必须在这里显式引入一次（官方模板也是这么做的）。
 // #if __has_include 是为了容忍「第一次编译、生成物还没出来」的情况。
-#if __has_include("ServiceMainWindow.g.cpp")
-#include "ServiceMainWindow.g.cpp"
+#if __has_include("ServicePage.g.cpp")
+#include "ServicePage.g.cpp"
 #endif
 // InitializeComponent() / Connect() / GetBindingConnector() 的**定义**在这里，
 // 不在 .g.h 里（.g.h 只有声明）。.g.hpp 里有一条
-//     template struct ServiceMainWindowT<struct ServiceMainWindow>;
+//     template struct ServicePageT<struct ServicePage>;
 // 显式实例化，正是它把这些成员模板实例化成可链接的符号。
-#if __has_include("ServiceMainWindow.xaml.g.hpp")
-#include "ServiceMainWindow.xaml.g.hpp"
+#if __has_include("ServicePage.xaml.g.hpp")
+#include "ServicePage.xaml.g.hpp"
 #endif
 // IWindowNative 是 MIDL 生成的 **COM 接口**，不是 WinRT 类型，
 // 所以不会出现在 cppwinrt 生成的任何投影头里。它随 WinUI 包的 include 目录一起分发，
@@ -69,77 +69,32 @@ bool ContainsCI(std::wstring const& hay, std::wstring const& needle) {
     return at >= 0;
 }
 
-// 行高必须与 MainWindow.xaml 里 DataTemplate 的 <Grid Height="32"> 保持一致。
+// 行高必须与 ServicePage.xaml 里 DataTemplate 的 <Grid Height="32"> 保持一致。
 // 右键命中测试是**算术**定位：VisualTreeHelper::GetChildren 在这版投影里不存在
 //（只有 GetChildrenCount / GetParent），没法遍历已实现的行容器去算包围盒，
 // 所以这里用「内容坐标 y / 行高」直接推出下标。这是本文件与 XAML 之间唯一的耦合点。
 constexpr double kRowHeight = 32.0;
 
-// 右键命中：由窗口子类回调。返回 true 表示已处理（且菜单已弹出）。
-bool HitTestRow(ServiceMenuHost* host, Point const& clientPt) {
-    if (!host || !host->list || host->rowCount <= 0) return false;
-
-    // 第一步必须把**物理像素换算成逻辑像素**，这一步漏了会同时错两处。
-    //
-    // WM_CONTEXTMENU 的 lParam 经 ScreenToClient 得到的是**物理**客户区像素，
-    // 而下面用到的三个量全是**逻辑**像素：
-    //   · TransformToVisual().TransformPoint() 的返回（XAML 坐标系是 DIP）
-    //   · ScrollPresenter.VerticalOffset()
-    //   · kRowHeight = 32（与 XAML 里 <Grid Height="32"> 对应）
-    // 两者只在 100% 缩放下相等。本机是 200%，不换算的话
-    // index = (物理 y − 逻辑 origin) / 32 ≈ 真实行号的 2 倍，
-    // 表现为「右键某一行的落点随机地命中别的行、或干脆越界不发生任何事」。
-    double scale = 1.0;
-    if (auto xr = host->root.XamlRoot()) {
-        scale = xr.RasterizationScale();
-    }
-    if (scale <= 0.0) scale = 1.0;
-
-    // Windows::Foundation::Point 的成员是 **float**，/WX 下必须显式收窄。
-    const Point logical{
-        static_cast<float>(clientPt.X / scale),
-        static_cast<float>(clientPt.Y / scale) };
-
-    const auto origin = host->list.TransformToVisual(host->root)
-                            .TransformPoint(Point{ 0.0f, 0.0f });
-    double y = logical.Y - origin.Y;
-    if (y < 0.0) return false;
-
-    // 必须叠加当前滚动偏移，否则滚下去之后命中算出来的下标会整体偏。
-    double offset = 0.0;
-    if (auto sv = host->list.try_as<IScrollView>()) {
-        if (auto sp = sv.ScrollPresenter()) offset = sp.VerticalOffset();
-    }
-    y += offset;
-    const int idx = static_cast<int>(y / kRowHeight);
-    if (idx < 0 || idx >= host->rowCount) return false;
-
-    host->list.SelectedIndex(idx);
-    // ShowAt 的坐标是**相对 target（列表）**的逻辑坐标。
-    host->menu.ShowAt(host->list, Point{
-                                      static_cast<float>(logical.X - origin.X),
-                                      static_cast<float>(logical.Y - origin.Y) });
-    return true;
-}
-
-LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                          UINT_PTR /*id*/, DWORD_PTR ref) {
-    if (msg == WM_CONTEXTMENU) {
-        POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
-        ::ScreenToClient(hwnd, &pt);
-        if (HitTestRow(reinterpret_cast<ServiceMenuHost*>(ref),
-                       Point{ static_cast<float>(pt.x), static_cast<float>(pt.y) })) {
-            return 0;   // 吃掉，WinUI 不要再自己弹一次
-        }
-    }
-    return ::DefSubclassProc(hwnd, msg, wp, lp);
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------- 构造
-ServiceMainWindow::ServiceMainWindow() {
-    LINGWU_TRACE("MainWindow ctor: enter");
+//
+// 【为什么构造函里什么都不做】
+// 外壳持有的是本类型的**值成员**，而 C++ 的成员构造发生在构造函数体**之前** ——
+// 也就是说本页面的构造早于外壳自己的 InitializeComponent()。
+// 若在这里就建 XAML 树，初始化顺序会变得不可控。
+// 所以真正的初始化统一放在 Initialize()，由外壳在自己 InitializeComponent()
+// 之后、页面进入可视树之前调用。
+ServicePage::ServicePage() {
+    LINGWU_TRACE("ServicePage ctor: enter");
+}
+
+// ---------------------------------------------------------------- 初始化
+void ServicePage::Initialize(lingwu::core::Settings* settings,
+                              std::shared_ptr<DialogGate> gate) {
+    settings_ = settings;
+    gate_ = std::move(gate);
+
     try {
         InitializeComponent();
     } catch (winrt::hresult_error const& err) {
@@ -176,97 +131,29 @@ ServiceMainWindow::ServiceMainWindow() {
     // 传字符串必须 box_value，直接给 L"..." 会报 C2665。
     confirm_.Content(deletePromptPanel_);
 
-    ApplyBackdrop();
-
-    // 自绘标题栏：内容延伸进标题栏区域，并把 DragRegion 设为可拖拽区。
-    // 有了 SetTitleBar，DWM 的命中测试才会把这块区域交给 XAML，
-    // 标题栏才能自己画内容（同时保留双击最大化 / 右键系统菜单）。
-    ExtendsContentIntoTitleBar(true);
-    SetTitleBar(DragRegion());
-
-    lingwu::core::LoadSettings(settings_);
-
-    // 默认尺寸与位置按**当前显示器的可用工作区**算，不写死像素。
-    //
-    // AppWindow 系列的 API 全部以**物理像素**为单位，与 XAML 的逻辑像素差一个
-    // RasterizationScale；写死像素在 200% 缩放下只有一半大。
-    try {
-        constexpr double kDefaultRatio = 0.72;
-        const auto work = DisplayArea::GetFromWindowId(
-            AppWindow().Id(), DisplayAreaFallback::Nearest).WorkArea();
-
-        const bool restorable =
-            settings_.width > 0 && settings_.height > 0 &&
-            settings_.left >= work.X && settings_.left < work.X + work.Width &&
-            settings_.top >= work.Y && settings_.top < work.Y + work.Height;
-
-        if (restorable) {
-            // 上次的位置还落在当前显示器的工作区里，就恢复它。
-            // 换了显示器 / 拔了外接屏时坐标会落在工作区外，这时退回默认布局 ——
-            // 否则窗口会开在屏幕外，用户以为程序没启动。
-            AppWindow().MoveAndResize(winrt::Windows::Graphics::RectInt32{
-                settings_.left, settings_.top, settings_.width, settings_.height });
-            LINGWU_TRACE("MainWindow: restored rect=(%d,%d) %dx%d",
-                          settings_.left, settings_.top,
-                          settings_.width, settings_.height);
-        } else {
-            const int w = static_cast<int>(static_cast<double>(work.Width) * kDefaultRatio);
-            const int h = static_cast<int>(static_cast<double>(work.Height) * kDefaultRatio);
-            const int x = work.X + (work.Width - w) / 2;
-            const int y = work.Y + (work.Height - h) / 2;
-            AppWindow().MoveAndResize(winrt::Windows::Graphics::RectInt32{ x, y, w, h });
-            LINGWU_TRACE("MainWindow: default rect=(%d,%d) %dx%d physical", x, y, w, h);
-        }
-    } catch (winrt::hresult_error const&) {
-        AppWindow().Resize(winrt::Windows::Graphics::SizeInt32{ 1040, 700 });
-        LINGWU_TRACE("MainWindow: DisplayArea failed, fell back to 1040x700");
-    }
-
-    if (auto pres = AppWindow().Presenter().try_as<OverlappedPresenter>()) {
-        pres.PreferredMinimumWidth(760);
-        pres.PreferredMinimumHeight(480);
-    }
-
     // 统一设置层里服务侧的字段都带 Service 前缀 —— 因为同一个 ini 里
     // 性能监视侧也有一个叫 sortMode 的键，两个 SortMode 语义完全不同。
     // 枚举与 int 之间必须显式转换：ini 里存的是 int，
     // FilterMode 是 0..4、SortMode 是 0..5，转换是等值的。
-    filterMode_ = static_cast<core::FilterMode>(settings_.serviceFilterMode);
-    sortMode_ = static_cast<core::SortMode>(settings_.serviceSortMode);
-    DetailExpander().IsExpanded(settings_.serviceDetailExpanded);
+    filterMode_ = static_cast<core::FilterMode>(settings_->serviceFilterMode);
+    sortMode_ = static_cast<core::SortMode>(settings_->serviceSortMode);
+    DetailExpander().IsExpanded(settings_->serviceDetailExpanded);
 
     WireEvents();
     UpdateSortIndicators();
 
-    HWND hwnd{};
-    winrt::check_hresult(this->m_inner.as<::IWindowNative>()->get_WindowHandle(&hwnd));
-    hwnd_ = hwnd;
-    // 发布 HWND 供第二份实例查找（按类名找是找不准的，
-    // WinUI 3 的窗口类名是系统统一的）。
-    platform::PublishMainHwnd(hwnd);
-
-    // 右键菜单的弹出由窗口子类接管（WM_CONTEXTMENU）。
-    // SetWindowSubclass 需要 comctl32.lib。
-    // 右键菜单：菜单本身在 XAML 的 Grid.Resources 里（见 MainWindow.xaml 的说明 ——
+    // 右键菜单：菜单本身在 XAML 的 Grid.Resources 里（见 ServicePage.xaml 的说明 ——
     // MenuFlyout 在 C++ 投影里没有 MenuItems()）。
-    // **弹出**走 Win32 子类的 WM_CONTEXTMENU，菜单**项**回到 Click；
+    // **弹出**走外壳的 Win32 子类 WM_CONTEXTMENU，菜单**项**回到 Click；
     // 两者不冲突：Click 是 RoutedEventHandler（可用委托族），
     // 而接不上的 RightTapped / SelectionChanged 一律绕开。
-    menuHost_ = std::make_shared<ServiceMenuHost>();
-    menuHost_->list = ServiceList();
-    menuHost_->root = RootGrid();
-    menuHost_->menu =
+    contextMenu_ =
         RootGrid().Resources().Lookup(box_value(L"RowContextMenu")).as<MenuFlyout>();
 
     CtxStart().Click([this](auto&&, auto&&) { OnStartClicked(); });
     CtxStop().Click([this](auto&&, auto&&) { OnStopClicked(); });
     CtxRestart().Click([this](auto&&, auto&&) { OnRestartClicked(); });
     CtxDelete().Click([this](auto&&, auto&&) { OnDeleteClicked(); });
-
-    ::SetWindowSubclass(hwnd, &HostProc, 1,
-                         reinterpret_cast<DWORD_PTR>(menuHost_.get()));
-
-    platform::ApplyWindowDecorations(hwnd);
 
     // 工具箱默认以管理员身份运行（manifest 声明 requireAdministrator），
     // 所以这个标志恒为 true。保留 SetElevated 调用是因为它还决定
@@ -299,56 +186,129 @@ ServiceMainWindow::ServiceMainWindow() {
     timer_.Tick([this](auto&&, auto&&) { OnTimerTick(); });
     timer_.Start();
 
-    // Closed 才是「窗口真的没了」的正确时刻。
-    // 在这里停后台线程而不是在 App 的别处：此时窗口还活着，
-    // 停线程的 join 有机会在几秒内完成，进程退出得更干净。
-    Closed([this](auto&&, auto&&) {
+    // 页面被摘下可视树（窗口关闭）时，后台线程必须停。
+    // Closed 才是「窗口真的没了」的正确时刻，但页面拿不到窗口的 Closed ——
+    // 所以这里用 Unloaded（元素离开可视树），再由外壳的 Shutdown() 兜底。
+    Unloaded([this](auto&&, auto&&) {
         if (!alive_->exchange(false)) {
-            return;   // Closed 可能被走两遍（提权路径 Close 一次、框架再走一次）
+            return;
         }
-        LINGWU_TRACE("MainWindow Closed: saving settings, stopping controller");
-        SaveWindowBounds();
+        LINGWU_TRACE("ServicePage: unloaded, stopping controller");
         try {
             if (timer_) timer_.Stop();
             controller_.Stop();
         } catch (std::exception const& e) {
-            LINGWU_TRACE("MainWindow Closed: cleanup threw %s", e.what());
+            LINGWU_TRACE("ServicePage unload: cleanup threw %s", e.what());
         }
     });
 
-    LINGWU_TRACE("MainWindow ctor: done");
+    LINGWU_TRACE("ServicePage: initialized");
 }
 
-void ServiceMainWindow::SaveWindowBounds() {
-    // 只在窗口可见时记录位置：最小化 / 隐藏时 GetRect 返回的是还原位置，
-    // 但如果它当时已经被 DWM 挪过（Win11 的 snap 组会在重启应用后复活），
-    // 记下来反而会开在错误的地方。
-    if (hwnd_ && ::IsWindowVisible(hwnd_)) {
-        RECT r{};
-        if (::GetWindowRect(hwnd_, &r)) {
-            settings_.left = r.left;
-            settings_.top = r.top;
-            settings_.width = r.right - r.left;
-            settings_.height = r.bottom - r.top;
+// ---------------------------------------------------------------- 公共入口
+void ServicePage::RefreshNow() {
+    // 切回本模块时补一次刷新。不可见期间心跳仍在跑（页面常驻），
+    // 但列表重建在不可见时被跳过了，所以这里主动拉一次。
+    ForceReorderNext();
+    RebuildRows();
+    UpdateStatusBar();
+}
+
+void ServicePage::Shutdown() {
+    if (!alive_->exchange(false)) {
+        // 已经清理过了。Closed 可能被走两遍（提权路径 Close 一次、框架再走一次）。
+        return;
+    }
+    // 退出前把本模块的偏好落盘。
+    // 原来这件事在窗口的 Closed 处理器里做，现在窗口归外壳了，
+    // 但**本模块的三个键**（排序/筛选/详情展开）仍然归本页负责。
+    // 窗口几何不在这里存 —— 那是外壳的资产。
+    try {
+        SaveServiceSettings();
+    } catch (std::exception const& e) {
+        LINGWU_TRACE("ServicePage::Shutdown save threw %s", e.what());
+    }
+    try {
+        if (timer_) timer_.Stop();
+        controller_.Stop();
+    } catch (std::exception const& e) {
+        LINGWU_TRACE("ServicePage::Shutdown cleanup threw %s", e.what());
+    }
+    // 「新建服务」窗口必须真正关闭：只要还有一个 Window 活着，
+    // XAML 框架的消息循环就不会结束，进程会僵留在「窗口全没了但还在」。
+    if (createWindow_) {
+        try {
+            createWindow_.Close();
+        } catch (...) {
+            // 关闭流程里不能再抛。
         }
+        createWindow_ = nullptr;
     }
-    settings_.serviceSortMode = static_cast<int>(sortMode_);
-    settings_.serviceFilterMode = static_cast<int>(filterMode_);
-    settings_.serviceDetailExpanded = DetailExpander().IsExpanded();
-    lingwu::core::SaveSettings(settings_);
+    LINGWU_TRACE("ServicePage: shutdown");
 }
 
-void ServiceMainWindow::ApplyBackdrop() {
-    // MicaBackdrop 只在 Win11（build >= 22000）有效；XAML 布局本身没问题，
-    // 在 Win10 上会静默失效，此时退到 Acrylic（Win10 1809 起可用）。
-    if (platform::SupportsMica()) {
-        SystemBackdrop(Microsoft::UI::Xaml::Media::MicaBackdrop());
-    } else {
-        SystemBackdrop(Microsoft::UI::Xaml::Media::DesktopAcrylicBackdrop());
+// 行右键菜单的命中测试。外壳的窗口子类拦到 WM_CONTEXTMENU 后回调这里。
+//
+// 【为什么由页面自己做】
+// 命中测试要用到行高、列表位置、当前滚动偏移 —— 这些都是本页面的布局信息。
+// 外壳不知道这些，硬塞给它等于把页面的布局知识复制一份到外壳里。
+bool ServicePage::HitTestRow(winrt::Windows::Foundation::Point const& clientPt) {
+    if (!contextMenu_ || contextRowCount_ <= 0) return false;
+
+    // 第一步必须把**物理像素换算成逻辑像素**，这一步漏了会同时错两处。
+    //
+    // WM_CONTEXTMENU 的 lParam 经 ScreenToClient 得到的是**物理**客户区像素，
+    // 而下面用到的三个量全是**逻辑**像素：
+    //   · TransformToVisual().TransformPoint() 的返回（XAML 坐标系是 DIP）
+    //   · ScrollPresenter.VerticalOffset()
+    //   · kRowHeight = 32（与 XAML 里 <Grid Height="32"> 对应）
+    // 两者只在 100% 缩放下相等。本机是 200%，不换算的话
+    // index = (物理 y − 逻辑 origin) / 32 ≈ 真实行号的 2 倍，
+    // 表现为「右键某一行的落点随机地命中别的行、或干脆越界不发生任何事」。
+    double scale = 1.0;
+    if (auto xr = RootGrid().XamlRoot()) {
+        scale = xr.RasterizationScale();
     }
+    if (scale <= 0.0) scale = 1.0;
+
+    // Windows::Foundation::Point 的成员是 **float**，/WX 下必须显式收窄。
+    const winrt::Windows::Foundation::Point logical{
+        static_cast<float>(clientPt.X / scale),
+        static_cast<float>(clientPt.Y / scale) };
+
+    const auto origin = ServiceList().TransformToVisual(RootGrid())
+                            .TransformPoint(winrt::Windows::Foundation::Point{ 0.0f, 0.0f });
+    double y = logical.Y - origin.Y;
+    if (y < 0.0) return false;
+
+    // 必须叠加当前滚动偏移，否则滚下去之后命中算出来的下标会整体偏。
+    double offset = 0.0;
+    if (auto sv = ServiceList().try_as<IScrollView>()) {
+        if (auto sp = sv.ScrollPresenter()) offset = sp.VerticalOffset();
+    }
+    y += offset;
+    const int idx = static_cast<int>(y / kRowHeight);
+    if (idx < 0 || idx >= contextRowCount_) return false;
+
+    ServiceList().SelectedIndex(idx);
+    // ShowAt 的坐标是**相对 target（列表）**的逻辑坐标。
+    contextMenu_.ShowAt(ServiceList(), winrt::Windows::Foundation::Point{
+                                        static_cast<float>(logical.X - origin.X),
+                                        static_cast<float>(logical.Y - origin.Y) });
+    return true;
 }
 
-void ServiceMainWindow::WireEvents() {
+void ServicePage::SaveServiceSettings() {
+    // 【窗口位置不在这里存】
+    // 合并成单窗口之后，窗口几何是**外壳**的资产（两个模块共用一个窗口，
+    // 位置只有一份，写两遍会互相覆盖）。服务页只写自己模块的三个键。
+    settings_->serviceSortMode = static_cast<int>(sortMode_);
+    settings_->serviceFilterMode = static_cast<int>(filterMode_);
+    settings_->serviceDetailExpanded = DetailExpander().IsExpanded();
+    lingwu::core::SaveSettings(*settings_);
+}
+
+void ServicePage::WireEvents() {
     // 事件全在代码后置里挂 lambda，不走 XAML 的 Click= 处理器。
     // 原因：C++/WinRT 的 XAML 事件处理器必须在 IDL 里声明成 runtimeclass 成员，
     // 每加一个按钮就要改一次 MainWindow.idl 并触发 MIDL 重跑；
@@ -404,8 +364,31 @@ void ServiceMainWindow::WireEvents() {
     }
 
     // 对话框互斥闸门：开之前置位、Closed 时清位，缺一处就永久锁死。
-    confirm_.Closed([this](auto&&, auto&&) { dialogOpen_->store(false); });
-    notice_.Closed([this](auto&&, auto&&) { dialogOpen_->store(false); });
+    //
+    // 闸门由**外壳**创建并注入，两个页面 + 外壳的关闭确认框共用同一把
+    // （合并成一个窗口后，同一个 XamlRoot 上只能挂一个 ContentDialog，
+    //   这条约束从「各窗口各管各的」升级成「全局唯一」）。
+    confirm_.Closed([this](auto&&, auto&&) {
+        if (gate_) gate_->release();
+        // 关闭确认框时如果还挂着一个「要弹的结果提示」，
+        // 在这里弹 —— 而不是在本框还没关的时候弹。
+        //
+        // 【为什么必须等 Closed】
+        // 如果在 PrimaryButtonClick 里就弹第二个 ContentDialog，
+        // 本框的 Closed 事件随后才触发，它会把闸门**清掉**，
+        // 于是第二个框还开着、闸门却已经空闲 —— 别的模块这时就能再弹一个，
+        // 三个框挤在一个 XamlRoot 上（症状：对话框一闪就没了、窗口也不动）。
+        // 合并成单窗口之后这个窗口期是可以被用户踩到的：
+        // 服务页弹着提示时切到性能页点「结束任务」即可。
+        if (!pendingOutcomeTitle_.empty()) {
+            auto title = std::move(pendingOutcomeTitle_);
+            auto message = std::move(pendingOutcomeMessage_);
+            pendingOutcomeTitle_.clear();
+            pendingOutcomeMessage_.clear();
+            ShowOutcome(title, message, false);
+        }
+    });
+    notice_.Closed([this](auto&&, auto&&) { if (gate_) gate_->release(); });
 
     // 提权按钮的处理器只挂一次，ShowOutcome 负责决定这一次要不要显示它。
     // 删除确认的主按钮：此刻 deletePromptInput_ 里已经回读完毕。
@@ -413,21 +396,20 @@ void ServiceMainWindow::WireEvents() {
 }
 
 // ---------------------------------------------------------------- 心跳
-void ServiceMainWindow::OnTimerTick() {
+void ServicePage::OnTimerTick() {
     if (!alive_->load()) {
         return;
     }
     DrainController();
 }
 
-void ServiceMainWindow::DrainController() {
+void ServicePage::DrainController() {
     // ---- 1. 两个下拉的选中项比对（绕开接不上的 SelectionChanged）----
     const int filterIndex = FilterBox().SelectedIndex();
     if (filterIndex >= 0 && filterIndex != lastFilterIndex_) {
         lastFilterIndex_ = filterIndex;
         filterMode_ = static_cast<core::FilterMode>(filterIndex);
-        settings_.serviceFilterMode = static_cast<int>(filterMode_);
-        lingwu::core::SaveSettings(settings_);
+        SaveServiceSettings();
         // 「第三方」需要全量可执行路径，这里才付那 N 次 RPC。
         if (filterMode_ == core::FilterMode::ThirdParty && !controller_.ThirdPartyReady()) {
             controller_.RequestThirdPartyScan();
@@ -527,8 +509,14 @@ void ServiceMainWindow::DrainController() {
 }
 
 // ---------------------------------------------------------------- 列表
-void ServiceMainWindow::RebuildRows() {
+void ServicePage::RebuildRows() {
     if (!alive_->load()) {
+        return;
+    }
+    // 窗口隐藏到托盘时**不重建列表**：没人看得见，纯属浪费。
+    // 后台枚举照常在跑（数据要保持新鲜），只是不往 UI 上灌。
+    // 窗口重新可见时由外壳调 RefreshNow() 补一次。
+    if (!hostVisible_) {
         return;
     }
 
@@ -701,18 +689,18 @@ void ServiceMainWindow::RebuildRows() {
         }
     }
 
-    menuHost_->rowCount = static_cast<int>(want);
+    contextRowCount_ = static_cast<int>(want);
     lastOrderApplyTick_ = now;
     UpdateStatusBar();
 }
 
-void ServiceMainWindow::ForceReorderNext() {
+void ServicePage::ForceReorderNext() {
     // 节流是为「状态每两秒自然抖动」设计的；用户的明确操作不该等它。
     lastOrderApplyTick_ = 0;
 }
 
 // ---------------------------------------------------------------- 状态栏
-void ServiceMainWindow::UpdateStatusBar() {
+void ServicePage::UpdateStatusBar() {
     wchar_t left[192];
     ::swprintf_s(left, L"共 %zu 个服务 · 筛选出 %zu 个", totalCount_, visibleCount_);
     StatusLeft().Text(hstring(left));
@@ -728,7 +716,7 @@ void ServiceMainWindow::UpdateStatusBar() {
     StatusRight().Text(hstring(right));
 }
 
-void ServiceMainWindow::UpdateSortIndicators() {
+void ServicePage::UpdateSortIndicators() {
     auto setArrow = [](FrameworkElement const& arrow, RotateTransform const& rot,
                        bool visible, double angle) {
         if (visible) {
@@ -749,7 +737,7 @@ void ServiceMainWindow::UpdateSortIndicators() {
     setArrow(ArrowStartType(), RotStartType(), active == kColStartType, angle);
 }
 
-void ServiceMainWindow::UpdateRow(winrt::LingwuToolbox::ServiceRow const& row,
+void ServicePage::UpdateRow(winrt::LingwuToolbox::ServiceRow const& row,
                            core::ServiceInfo const& info) {
     // 显示名与服务名相同时不重复显示 —— 服务管理里两者相同的占多数，
     // 并排显示两遍同样的文字会让名字列显得又长又挤。
@@ -781,7 +769,7 @@ void ServiceMainWindow::UpdateRow(winrt::LingwuToolbox::ServiceRow const& row,
 }
 
 // ---------------------------------------------------------------- 交互
-void ServiceMainWindow::OnSortHeaderClick(size_t column) {
+void ServicePage::OnSortHeaderClick(size_t column) {
     // 三列各自在自己那一列的两档之间来回切。
     //
     // 【为什么名称列也参与切换】之前这里是 sortMode_ = NameAsc 写死，
@@ -821,14 +809,15 @@ void ServiceMainWindow::OnSortHeaderClick(size_t column) {
         sortMode_ = now;
     }
 
-    settings_.serviceSortMode = static_cast<int>(sortMode_);
-    lingwu::core::SaveSettings(settings_);
+    // 排序偏好立刻落盘。走 SaveServiceSettings 而不是只写 serviceSortMode，
+    // 这样「详情面板展开与否」也会一并记下来（它没有别的保存时机）。
+    SaveServiceSettings();
     UpdateSortIndicators();
     ForceReorderNext();
     RebuildRows();
 }
 
-void ServiceMainWindow::OnSearchChanged(AutoSuggestBox const& sender) {
+void ServicePage::OnSearchChanged(AutoSuggestBox const& sender) {
     // 不按 Reason() 分支。原来这里挡掉了除 UserInput 以外的所有情况，
     // 理由是「程序性回写也会触发本事件」。但本工程**没有任何地方**
     // 回写 SearchBox().Text()（全仓库 grep 只有这一处读取），
@@ -846,19 +835,19 @@ void ServiceMainWindow::OnSearchChanged(AutoSuggestBox const& sender) {
     RebuildRows();
 }
 
-void ServiceMainWindow::OnRefreshClicked() {
+void ServicePage::OnRefreshClicked() {
     controller_.RequestImmediateRefresh();
     StatusLeft().Text(hstring(L"正在刷新…"));
 }
 
-std::wstring ServiceMainWindow::SelectedServiceName() const {
+std::wstring ServicePage::SelectedServiceName() const {
     if (selectedName_.empty()) {
         return std::wstring();
     }
     return selectedName_;
 }
 
-void ServiceMainWindow::OnListSelectionChanged(IInspectable const& sender,
+void ServicePage::OnListSelectionChanged(IInspectable const& sender,
                                         SelectionChangedEventArgs const& args) {
     const int idx = ServiceList().SelectedIndex();
     if (idx < 0 || static_cast<size_t>(idx) >= currentOrder_.size()) {
@@ -917,7 +906,7 @@ void ServiceMainWindow::OnListSelectionChanged(IInspectable const& sender,
     controller_.RequestDetails(selectedName_);
 }
 
-void ServiceMainWindow::OnStartClicked() {
+void ServicePage::OnStartClicked() {
     const std::wstring name = SelectedServiceName();
     if (name.empty()) return;
     core::Operation op;
@@ -928,7 +917,7 @@ void ServiceMainWindow::OnStartClicked() {
     }
 }
 
-void ServiceMainWindow::OnStopClicked() {
+void ServicePage::OnStopClicked() {
     const std::wstring name = SelectedServiceName();
     if (name.empty()) return;
     core::Operation op;
@@ -939,7 +928,7 @@ void ServiceMainWindow::OnStopClicked() {
     }
 }
 
-void ServiceMainWindow::OnRestartClicked() {
+void ServicePage::OnRestartClicked() {
     const std::wstring name = SelectedServiceName();
     if (name.empty()) return;
     core::Operation op;
@@ -950,7 +939,7 @@ void ServiceMainWindow::OnRestartClicked() {
     }
 }
 
-void ServiceMainWindow::OnStartTypeApplyClicked() {
+void ServicePage::OnStartTypeApplyClicked() {
     const std::wstring name = SelectedServiceName();
     const int index = StartTypeBox().SelectedIndex();
     if (name.empty() || index < 0 || index > 3) {
@@ -965,12 +954,12 @@ void ServiceMainWindow::OnStartTypeApplyClicked() {
     }
 }
 
-void ServiceMainWindow::OnDeleteClicked() {
+void ServicePage::OnDeleteClicked() {
     const std::wstring name = SelectedServiceName();
     if (name.empty()) {
         return;
     }
-    if (dialogOpen_->load()) {
+    if ((gate_ && gate_->is_open())) {
         LINGWU_TRACE("OnDeleteClicked ignored: a dialog is already open");
         return;
     }
@@ -995,7 +984,7 @@ void ServiceMainWindow::OnDeleteClicked() {
     ShowDeleteConfirm(name, thirdParty, running);
 }
 
-void ServiceMainWindow::OnDeleteConfirmed() {
+void ServicePage::OnDeleteConfirmed() {
     if (pendingDeleteName_.empty()) {
         return;
     }
@@ -1015,9 +1004,14 @@ void ServiceMainWindow::OnDeleteConfirmed() {
         if (typed != name) {
             LINGWU_TRACE("delete confirm: typed \"%ls\" != \"%ls\", rejected",
                           typed.c_str(), name.c_str());
-            dialogOpen_->store(false);
-            ShowOutcome(L"未删除",
-                         L"输入的服务名与要删除的服务不一致，未执行删除。", false);
+            // 【不直接在这里弹提示框】
+            // 确认框此刻还开着，而闸门还被它占着。
+            // 现在弹第二个 ContentDialog 的话，本框随后触发的 Closed
+            // 会把闸门清掉，于是「第二个框还开着、闸门却空闲」。
+            // 改成**登记**一条待弹提示，由 confirm_.Closed 在本框彻底关掉后弹。
+            pendingOutcomeTitle_ = L"未删除";
+            pendingOutcomeMessage_ =
+                L"输入的服务名与要删除的服务不一致，未执行删除。";
             return;
         }
     }
@@ -1031,7 +1025,7 @@ void ServiceMainWindow::OnDeleteConfirmed() {
     }
 }
 
-void ServiceMainWindow::OnNewServiceClicked() {
+void ServicePage::OnNewServiceClicked() {
     if (!createWindow_) {
         createWindow_ = winrt::make<CreateServiceWindow>();
         // Closed 只挂一次：反复 App Window 的 Closed 回调会把同一个闭包
@@ -1076,11 +1070,11 @@ void ServiceMainWindow::OnNewServiceClicked() {
 }
 
 // ---------------------------------------------------------------- 对话框
-void ServiceMainWindow::ShowOutcome(hstring const& title, hstring const& message,
+void ServicePage::ShowOutcome(hstring const& title, hstring const& message,
                              bool offerElevate) {
     (void)offerElevate;
     if (!alive_->load()) return;
-    if (dialogOpen_->load()) {
+    if ((gate_ && gate_->is_open())) {
         // 同一时刻只能有一个 ContentDialog。冲突时**只落 trace 不弹第二个** ——
         // 弹第二个会把已经开着的那个挤掉，用户看到的是「对话框一闪就没了」。
         LINGWU_TRACE("ShowOutcome skipped: dialog already open");
@@ -1088,7 +1082,7 @@ void ServiceMainWindow::ShowOutcome(hstring const& title, hstring const& message
     }
 
     try {
-        dialogOpen_->store(true);
+        if (gate_ && !gate_->try_acquire()) return;
         notice_.XamlRoot(RootGrid().XamlRoot());
         // Title / Content 在 WinUI 3 里是 **IInspectable**（不是 hstring），
         // 直接传 L"..." 或 std::wstring 会报 C2665，必须包一层 box_value。
@@ -1107,14 +1101,14 @@ void ServiceMainWindow::ShowOutcome(hstring const& title, hstring const& message
     } catch (winrt::hresult_error const& err) {
         LINGWU_TRACE("ShowOutcome threw hresult=0x%08X msg=%ls",
                       static_cast<unsigned>(err.code().value), err.message().c_str());
-        dialogOpen_->store(false);
+        if (gate_) gate_->release();
     }
 }
 
-void ServiceMainWindow::ShowDeleteConfirm(std::wstring const& name, bool thirdParty,
+void ServicePage::ShowDeleteConfirm(std::wstring const& name, bool thirdParty,
                                    bool running) {
     if (!alive_->load()) return;
-    if (dialogOpen_->load()) {
+    if ((gate_ && gate_->is_open())) {
         LINGWU_TRACE("ShowDeleteConfirm skipped: dialog already open");
         return;
     }
@@ -1124,7 +1118,7 @@ void ServiceMainWindow::ShowDeleteConfirm(std::wstring const& name, bool thirdPa
     pendingDeleteStopFirst_ = running;
 
     try {
-        dialogOpen_->store(true);
+        if (gate_ && !gate_->try_acquire()) return;
         confirm_.XamlRoot(RootGrid().XamlRoot());
         confirm_.Title(box_value(L"删除服务"));
 
@@ -1163,7 +1157,7 @@ void ServiceMainWindow::ShowDeleteConfirm(std::wstring const& name, bool thirdPa
     } catch (winrt::hresult_error const& err) {
         LINGWU_TRACE("ShowDeleteConfirm threw hresult=0x%08X msg=%ls",
                       static_cast<unsigned>(err.code().value), err.message().c_str());
-        dialogOpen_->store(false);
+        if (gate_) gate_->release();
         pendingDeleteName_.clear();
     }
 }

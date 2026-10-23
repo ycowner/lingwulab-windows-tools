@@ -1,17 +1,17 @@
 #pragma once
 
-// 按官方 C++/WinRT 模板的写法，这里只引 cppwinrt 生成的 MainWindow.g.h。
+// 按官方 C++/WinRT 模板的写法，这里只引 cppwinrt 生成的 ServicePage.g.h。
 //
 // 它内部有
-//     #if __has_include("ServiceMainWindow.xaml.g.h")
-//         #include "ServiceServiceMainWindow.xaml.g.h"
+//     #if __has_include("ServicePage.xaml.g.h")
+//         #include "ServicePage.xaml.g.h"
 //     #else
-//         ... ServiceMainWindowT = ServiceMainWindow_base   // 退化成没有 XAML 代码生成的纯壳
+//         ... ServicePageT = ServicePage_base   // 退化成没有 XAML 代码生成的纯壳
 //     #endif
 // 也就是说 XAML 代码后置头是被自动带进来的；一旦 __has_include 落空，
 // 编译能过但 InitializeComponent() 之类全都不存在，症状是莫名其妙的编译错误。
 // vcxproj 里为此把 $(IntDir)src\ui 加进了 AdditionalIncludeDirectories。
-#include "ServiceMainWindow.g.h"
+#include "ServicePage.g.h"
 
 #include "pch.h"
 
@@ -19,14 +19,17 @@
 #include "core/settings.h"
 #include "core/service/service_model.h"
 
-// 新建服务窗口。主窗口持有它的强引用并接收 Closed 回调，
+// 新建服务窗口。本页面持有它的强引用并接收 Closed 回调，
 // 所以这里要看到完整定义而不是前置声明。
 #include "CreateServiceWindow.xaml.h"
 
 // ServiceRow 必须在这里可见：x:DataType="local:ServiceRow" 让 XAML 编译器生成的
-// x:Bind 代码在 ServiceMainWindow.xaml.g.cpp 里直接访问它的成员，而那个 .g.cpp 是被
-// MainWindow.xaml.cpp 在本头之后 include 的。
+// x:Bind 代码在 ServicePage.xaml.g.cpp 里直接访问它的成员，而那个 .g.cpp 是被
+// ServicePage.xaml.cpp 在本头之后 include 的。
 #include "ServiceRow.h"
+
+// 跨模块共享的类型：ContentDialog 独占闸门（与性能页共用同一把）。
+#include "shell_types.h"
 
 #include <atomic>
 #include <memory>
@@ -39,35 +42,60 @@
 
 namespace winrt::LingwuToolbox::implementation {
 
-// 窗口子类与右键菜单之间的共享状态。
+// 服务管理模块。外壳窗口里的一个 Page。
 //
-// 为什么要走 Win32 窗口子类而不是 XAML 事件：cppwinrt 3.0.260818.1 生成的
-// Microsoft.UI.Xaml.Input.h 里，**所有** delegate 的模板构造函数都漏了 inline
-// （PointerEventHandler / RightTappedEventHandler …），
-// 只有 Windows.Foundation.h 那批（RoutedEventHandler / TypedEventHandler）是好的。
-// 结论：Microsoft.UI.* 的事件一律接不上（直接接 → LNK2019；
-// 绕开 make_delegate → base.h 的 C2027「使用了未定义类型」）。
-// 窗口过程是静态函数、拿不到 this，靠 SetWindowSubclass 的 refData 传这里。
-struct ServiceMenuHost {
-    winrt::Microsoft::UI::Xaml::Controls::ListView list{ nullptr };
-    winrt::Microsoft::UI::Xaml::Controls::MenuFlyout menu{ nullptr };
-    winrt::Microsoft::UI::Xaml::FrameworkElement root{ nullptr };
-    int rowCount = 0;   // 每次重建列表后同步，供命中测试做边界判断
-};
-
-// 模板实参必须是 ServiceMainWindow 自己。
+// 【它拥有什么、什么归外壳】
+//   本页面：服务枚举、列表、排序、筛选、搜索、启动/停止/重启/删除、
+//           新建服务窗口、详情面板。
+//   外壳  ：窗口几何、标题栏、导航、托盘、单实例、关闭流程、对话框闸门。
+//
+// 【为什么设置只有一个实例】
+// 合并前两个工具各写各的 ini，键名空间互不相干。合并后只剩一份
+// %APPDATA%\LingwuToolbox\settings.ini，而 SaveSettings 写的是**整份**结构。
+// 如果每个模块各自持有一份 Settings 副本，A 模块保存时会把 B 模块刚写的值
+// 用自己的旧副本覆盖掉 —— 症状是「在服务页改了排序，切回性能页点一下，
+// 服务页的排序偏好被重置」。
+// 所以 Settings 实例由**外壳**创建并持有，两个页面拿的是同一个指针。
+//
+// 【模板实参必须是 ServicePage 自己】
 // 写成 MainWindow 的话（改名时漏改过），在**只 include 了本头**的编译单元里
 // MainWindow 会解析到同命名空间下的**投影类型** winrt::LingwuToolbox::MainWindow
 // —— 那是外壳窗口，跟这里没关系 —— 于是 C++/WinRT 生成的
-// root_implements<投影类型, ServiceMainWindow, composing, IComponentConnector>
+// root_implements<投影类型, ServicePage, composing, IComponentConnector>
 // 根本没法构造，报 C2665，而且报错位置在 Microsoft.UI.Xaml.Markup.h 里，
 // 离真正的原因隔着三层。
-struct ServiceMainWindow : ServiceMainWindowT<ServiceMainWindow> {
-    ServiceMainWindow();
+struct ServicePage : ServicePageT<ServicePage> {
+    ServicePage();
+
+    // ---- 外壳调用的入口 ------------------------------------------------
+    // 由外壳在创建本页面后立刻调用一次，必须早于页面第一次读写设置。
+    //
+    // 为什么不放进构造函数：设置实例是**外壳**创建的（两个模块共用一份，
+    // 否则 A 模块保存时会用旧副本覆盖 B 模块刚写的键），
+    // 页面构造时那个指针还不存在。
+    void Initialize(lingwu::core::Settings* settings, std::shared_ptr<DialogGate> gate);
+
+    // 整个窗口是否可见。窗口被隐藏到托盘时外壳会告知，
+    // 页面据此跳过重建（隐藏时做的重建没人看得见，纯属浪费）。
+    void SetHostVisible(bool visible) { hostVisible_ = visible; }
+
+    // 切回本模块时补一次刷新。
+    void RefreshNow();
+
+    // 退出前清理：关掉「新建服务」窗口（否则框架的消息循环不结束，进程会僵留）、
+    // 停掉后台枚举线程。
+    void Shutdown();
+
+    // 行右键菜单的命中测试。外壳的窗口子类拦到 WM_CONTEXTMENU 后回调这里。
+    //
+    // 【为什么由页面自己做】
+    // 命中测试要用到行高、列表位置、当前滚动偏移 —— 这些都是本页面的布局信息。
+    // 外壳不知道这些，硬塞给它等于把页面的布局知识复制一份到外壳里。
+    // 返回 true 表示已处理（菜单已弹出）。
+    bool HitTestRow(winrt::Windows::Foundation::Point const& clientPt);
 
 private:
     // ---- 启动装配 ----
-    void ApplyBackdrop();
     void WireEvents();
 
     // ---- 心跳 ----
@@ -119,8 +147,11 @@ private:
     // 当前选中服务的名字；没有选中返回空串。
     std::wstring SelectedServiceName() const;
 
-    // 记录窗口位置与筛选/排序偏好，供下次启动恢复。
-    void SaveWindowBounds();
+    // 记录本模块的筛选/排序偏好，供下次启动恢复。
+    //
+    // 【窗口位置不在这里存】合并成单窗口之后，窗口几何是**外壳**的资产
+    // （两个模块共用一个窗口，位置只有一份，写两遍会互相覆盖）。
+    void SaveServiceSettings();
 
     // 表头列序
     static constexpr size_t kColName = 0;
@@ -128,7 +159,8 @@ private:
     static constexpr size_t kColStartType = 2;
 
     lingwu::core::service::Controller controller_{};
-    lingwu::core::Settings settings_{};
+    // 设置实例由外壳注入（见上面的说明），本页不自己建。
+    lingwu::core::Settings* settings_ = nullptr;
 
     winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer timer_{ nullptr };
 
@@ -139,9 +171,9 @@ private:
     //     ShowAsync() 返回后立刻析构；
     //   · 同一个 XamlRoot 上不能同时挂两个 ContentDialog，复用天然规避。
     winrt::Microsoft::UI::Xaml::Controls::ContentDialog confirm_{ nullptr };   // 删除确认
-    winrt::Microsoft::UI::Xaml::Controls::ContentDialog notice_{ nullptr };    // 结果 / 提权提示
+    winrt::Microsoft::UI::Xaml::Controls::ContentDialog notice_{ nullptr };    // 结果提示
 
-    // 删除确认框的面板。**构造函数里只建一次**，之后永不重建。
+    // 删除确认框的面板。**Initialize() 里只建一次**，之后永不重建。
     //
     // 为什么不能每次弹出现建一个 StackPanel 再 Append：
     // 这里的 TextBox 是长期存活的成员，而 XAML 元素在同一时刻只能有一个父节点。
@@ -152,22 +184,44 @@ private:
     winrt::Microsoft::UI::Xaml::Controls::TextBlock deletePromptText_{ nullptr };
     winrt::Microsoft::UI::Xaml::Controls::TextBox deletePromptInput_{ nullptr };
 
-    // 同一个 XamlRoot 上当前是否已有对话框打开。
-    // 开之前置 true、Closed 时置 false，缺一处就会永久锁死。
-    std::shared_ptr<std::atomic<bool>> dialogOpen_ =
-        std::make_shared<std::atomic<bool>>(false);
+    // 跨模块对话框闸门。由外壳注入，与性能页 + 外壳关闭确认框共用同一把。
+    std::shared_ptr<DialogGate> gate_{ nullptr };
+
+    // 整个窗口是否可见（隐藏到托盘时为 false）。由外壳维护。
+    bool hostVisible_ = true;
+
+    // 行右键菜单。菜单本体在 XAML 的 Grid.Resources 里（见 ServicePage.xaml 的说明 ——
+    // MenuFlyout 在 C++ 投影里没有 MenuItems()，只能从 Resources 里 Lookup 出来）。
+    // **弹出**走外壳的 Win32 子类 WM_CONTEXTMENU，菜单**项**回到 Click；
+    // 两者不冲突：Click 是 RoutedEventHandler（可用委托族），
+    // 而接不上的 RightTapped / SelectionChanged 一律绕开。
+    winrt::Microsoft::UI::Xaml::Controls::MenuFlyout contextMenu_{ nullptr };
+    // 每次重建列表后同步，供命中测试做边界判断。
+    int contextRowCount_ = 0;
 
     // 删除流程的暂存状态（确认框与删除按钮之间的一次性交接）。
     std::wstring pendingDeleteName_{};
     bool pendingDeleteThirdParty_ = false;
     bool pendingDeleteStopFirst_ = false;
 
+    // 「确认框已经关了、但还有一条提示要弹」的暂存。
+    //
+    // 用来解决一个次序问题：删除确认框的主按钮里如果直接弹第二个
+    // ContentDialog，确认框随后的 Closed 事件会把闸门清掉，
+    // 于是「第二个框还开着、闸门却空闲」，别的模块就能再弹一个挤掉它。
+    // 合并成单窗口之后这个窗口期用户是踩得到的：
+    // 服务页弹着提示时切到性能页点「结束任务」即可。
+    // 所以改成登记到这里，由 confirm_.Closed 在确认框彻底关掉之后再弹。
+    //
+    // 类型是 hstring 而不是 std::wstring：ShowOutcome 的形参就是 hstring，
+    // 用 std::wstring 存再转一次会多一次拷贝，而且 hstring 本身就是
+    // WinRT 的字符串投影，没有理由绕道 std::wstring。
+    winrt::hstring pendingOutcomeTitle_{};
+    winrt::hstring pendingOutcomeMessage_{};
+
     // 新建服务窗口。**必须持有强引用**：XAML 框架不延长我们的生命周期，
     // 局部变量一旦析构窗口就跟着没了。常驻复用而不是每次新开。
     winrt::LingwuToolbox::CreateServiceWindow createWindow_{ nullptr };
-
-    std::shared_ptr<ServiceMenuHost> menuHost_{};
-    HWND hwnd_{ nullptr };
 
     // ---- 行池（列表容器只创建一次，靠这三者保持稳定）--------------------
     //
@@ -220,7 +274,7 @@ private:
     std::vector<lingwu::core::service::ServiceInfo> snapshot_{};
 
     // 两个 ComboBox 的「上次已知选中项」。本版 cppwinrt 的
-    // SelectionChangedEventHandler 接不上（见 ServiceMenuHost 上方的说明），
+    // SelectionChangedEventHandler 接不上（见类注释上方的说明），
     // 所以改用心跳里比对 SelectedIndex。
     int lastFilterIndex_ = -1;
     int lastStartTypeIndex_ = -1;
@@ -228,7 +282,7 @@ private:
     // 选中行的详情是否已经填进面板。
     bool detailShown_ = false;
 
-    // 后台线程活着吗。回调里绝不碰 this：窗口可能已经销毁。
+    // 后台线程活着吗。回调里绝不碰 this：页面可能已经销毁。
     std::shared_ptr<std::atomic<bool>> alive_ =
         std::make_shared<std::atomic<bool>>(true);
 
@@ -238,5 +292,5 @@ private:
 }  // namespace winrt::LingwuToolbox::implementation
 
 namespace winrt::LingwuToolbox::factory_implementation {
-struct ServiceMainWindow : ServiceMainWindowT<ServiceMainWindow, implementation::ServiceMainWindow> {};
+struct ServicePage : ServicePageT<ServicePage, implementation::ServicePage> {};
 }  // namespace winrt::LingwuToolbox::factory_implementation

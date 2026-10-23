@@ -1,4 +1,4 @@
-// ServiceMainWindow.idl - C++/WinRT component declaration.
+// ServicePage.idl - C++/WinRT component declaration.
 //
 // IMPORTANT: this file MUST stay pure ASCII.
 // MIDL reads source files using the system ANSI code page (936 on zh-CN),
@@ -9,15 +9,15 @@
 // attribute and $(RootNamespace) in LingwuToolbox.vcxproj, or the XAML
 // compiler fails with WMC1002.
 //
-// NOTE: Phase 1 keeps the service manager as its own top-level window so the
-// two halves can be verified independently. Phase 2 turns it into a page
-// inside the shell window.
+// The base class is Page, not Window: this is the service-manager module
+// hosted INSIDE the toolbox shell window. Window-level APIs (AppWindow,
+// ExtendsContentIntoTitleBar, Closing, Hide) live on the shell.
 
 namespace LingwuToolbox
 {
     [default_interface]
-    runtimeclass ServiceMainWindow : Microsoft.UI.Xaml.Window
+    runtimeclass ServicePage : Microsoft.UI.Xaml.Controls.Page
     {
-        ServiceMainWindow();
+        ServicePage();
     }
 }

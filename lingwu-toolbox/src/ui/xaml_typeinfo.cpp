@@ -32,9 +32,13 @@
 // 而那个 implementation::SettingsWindow 是你在这个头里声明的，
 // 生成文件的 include 链里没有它。每个 XAML 页都要在这里补一次。
 #include "SettingsWindow.xaml.h"
-// 服务管理窗口与新建服务窗口同理 —— 它们也是 XAML 页，
+// 服务管理页与新建服务窗口同理 —— 它们也是 XAML 页，
 // XamlTypeInfo.g.cpp 会引用它们的 implementation:: 类型。
-#include "ServiceMainWindow.xaml.h"
+#include "ServicePage.xaml.h"
 #include "CreateServiceWindow.xaml.h"
+
+// 两个模块页同理。合并成单窗口之后它们不再是顶层窗口，
+// 但仍然是 XAML 页，类型表里照样有一份。
+#include "MonitorPage.xaml.h"
 
 #include "XamlTypeInfo.g.cpp"

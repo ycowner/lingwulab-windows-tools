@@ -290,9 +290,11 @@
     <ClCompile Include="src\core\settings.cpp" />
     <ClCompile Include="src\ui\App.xaml.cpp" />
     <ClCompile Include="src\ui\MainWindow.xaml.cpp" />
-    <!-- 服务管理窗口。Phase 2 会把它改成同窗口内的页面；
-         Phase 1 期间它仍是独立顶层窗口，行为与合并前一致。 -->
-    <ClCompile Include="src\ui\ServiceMainWindow.xaml.cpp" />
+    <!-- 两个模块页。Phase 2 起它们不再是顶层窗口，而是 MainWindow 里的 Page：
+         各自的代码后置 .cpp 里只留页面级逻辑（采样 / 枚举 / 列表 / 交互），
+         窗口级的东西（几何、托盘、导航、对话框闸门）全部上移到 MainWindow。 -->
+    <ClCompile Include="src\ui\MonitorPage.xaml.cpp" />
+    <ClCompile Include="src\ui\ServicePage.xaml.cpp" />
     <!-- 新建服务窗口。与 MainWindow 同款：自己的代码后置 .cpp，
          事件全在 .cpp 里挂 lambda，不走 XAML 的 Click= 处理器。 -->
     <ClCompile Include="src\ui\CreateServiceWindow.xaml.cpp" />
@@ -342,7 +344,10 @@
     <ClInclude Include="src\core\settings.h" />
     <ClInclude Include="src\ui\App.xaml.h" />
     <ClInclude Include="src\ui\MainWindow.xaml.h" />
-    <ClInclude Include="src\ui\ServiceMainWindow.xaml.h" />
+    <ClInclude Include="src\ui\MonitorPage.xaml.h" />
+    <ClInclude Include="src\ui\ServicePage.xaml.h" />
+    <!-- 外壳与页面之间的共享契约：ContentDialog 独占闸门 + 窗口子类的菜单中转结构。 -->
+    <ClInclude Include="src\ui\shell_types.h" />
     <ClInclude Include="src\ui\CreateServiceWindow.xaml.h" />
     <ClInclude Include="src\ui\SettingsWindow.xaml.h" />
     <ClInclude Include="src\ui\ProcessRow.h" />
@@ -366,10 +371,17 @@
       <SubType>Code</SubType>
       <DependentUpon>MainWindow.xaml</DependentUpon>
     </Midl>
-    <!-- 服务管理窗口同样需要 .idl：x:Class 找不到 runtimeclass 会报 WMC1002。 -->
-    <Midl Include="src\ui\ServiceMainWindow.idl">
+    <!-- 两个模块页同样需要 .idl：x:Class 找不到 runtimeclass 会报 WMC1002。
+         基类是 Microsoft.UI.Xaml.Controls.Page（不再是 Window），
+         文件必须保持纯 ASCII（midl 按系统 ANSI 码页 936 读，中文报 C4819，
+         而本工程开了 /WX）。 -->
+    <Midl Include="src\ui\MonitorPage.idl">
       <SubType>Code</SubType>
-      <DependentUpon>ServiceMainWindow.xaml</DependentUpon>
+      <DependentUpon>MonitorPage.xaml</DependentUpon>
+    </Midl>
+    <Midl Include="src\ui\ServicePage.idl">
+      <SubType>Code</SubType>
+      <DependentUpon>ServicePage.xaml</DependentUpon>
     </Midl>
     <!-- 新建服务窗口：同款，DependentUpon 指向自己的 .xaml。 -->
     <Midl Include="src\ui\CreateServiceWindow.idl">
@@ -403,7 +415,11 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
-    <Page Include="src\ui\ServiceMainWindow.xaml">
+    <Page Include="src\ui\MonitorPage.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="src\ui\ServicePage.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
