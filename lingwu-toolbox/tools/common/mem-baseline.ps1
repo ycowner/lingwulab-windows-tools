@@ -111,7 +111,7 @@ function Add-Sample([string]$Scenario, [string]$Tag = '') {
         t        = [math]::Round(((Get-Date) - $script:T0).TotalSeconds, 1)
         priv     = [math]::Round($live.PrivateMemorySize64 / 1MB, 1)
         ws       = [math]::Round($live.WorkingSet64 / 1MB, 1)
-        h        = [live].HandleCount
+        h        = $live.HandleCount
     }
     $samples.Add($row)
     return $row
@@ -159,7 +159,16 @@ function Add-Result([string]$Name, $rows) {
     $tailSlope = Get-Slope $tail 'priv'
     $hDelta    = $hEnd - $hStart
 
-    $verdict = if ($tailSlope -gt 0.5) { 'RISING (possible leak)' }
+    # The phase length. The slope is normalised to MB/min, so a SHORT phase
+    # turns a 1 MB wobble into a scary-looking "6 MB/min". The absolute rise
+    # over the phase is the number that actually means something.
+    $span = [double]$rows[$rows.Count - 1].t - [double]$rows[0].t
+    $tailRise = [double]$tail[$tail.Count - 1].priv - [double]$tail[0].priv
+
+    # Leak verdict: the tail keeps climbing AND the climb is worth at least
+    # 5 MB in absolute terms. A 1.4 MB drift over a 45-second phase is not a
+    # leak, it is jitter -- and the handles usually went DOWN in that case.
+    $verdict = if (($tailRise -ge 5.0) -and ($tailSlope -gt 0.5)) { 'RISING (possible leak)' }
                elseif ($hDelta -gt 8) { 'RISING (handle count grew)' }
                elseif ($steps -gt 0) { 'warm-up step(s), then flat' }
                else { 'flat' }
@@ -167,12 +176,16 @@ function Add-Result([string]$Name, $rows) {
     $results.Add([pscustomobject]@{
         Scenario   = $Name
         Samples    = $rows.Count
+        Seconds    = [math]::Round($span, 0)
         WsStart    = [math]::Round($wsStart, 1)
         WsEnd      = [math]::Round($wsEnd, 1)
         WsPeak     = [math]::Round($wsPeak, 1)
+        WsDelta    = [math]::Round($wsEnd - $wsStart, 1)
         PrivStart  = [math]::Round($privStart, 1)
         PrivEnd    = [math]::Round($privEnd, 1)
         PrivPeak   = [math]::Round($privPeak, 1)
+        PrivDelta  = [math]::Round($privEnd - $privStart, 1)
+        TailRise   = [math]::Round($tailRise, 1)
         HandleFrom = $hStart
         HandleTo   = $hEnd
         HandleDelta= $hDelta
@@ -297,29 +310,36 @@ $samples | Export-Csv -Path $OutCsv -NoTypeInformation -Encoding UTF8
 
 Write-Host ''
 Write-Host '==================== MEMORY BASELINE ===================='
-Write-Host ('{0,-10} {1,-26} {2,-30} {3,-8} {4,-10} {5}' -f `
-    'scenario', 'working set MB (start>end/peak)',
-    'private MB (start>end/peak)', 'handles', 'slope', 'verdict')
-Write-Host ('-' * 120)
+Write-Host ('{0,-10} {1,-7} {2,-22} {3,-24} {4,-9} {5}' -f `
+    'scenario', 'secs', 'working set MB (s>e/peak)',
+    'private MB (s>e/peak) +d', 'handles', 'tail')
+Write-Host ('-' * 118)
 foreach ($r in $results) {
     $ws = ('{0} > {1} / {2}' -f $r.WsStart, $r.WsEnd, $r.WsPeak)
-    $pv = ('{0} > {1} / {2}   {3}' -f $r.PrivStart, $r.PrivEnd, $r.PrivPeak, $r.Verdict)
-    Write-Host ('{0,-10} {1,-26} {2,-30} {3,-8} {4,-10} {5}' -f `
-        $r.Scenario, $ws, $pv, ("{0}>{1}" -f $r.HandleFrom, $r.HandleTo),
-        ("{0}/min" -f $r.Slope), ("tail {0}/min steps {1}" -f $r.TailSlope, $r.Steps))
+    $pv = ('{0} > {1} / {2}  {3:+0.0;-0.0;0.0}' -f $r.PrivStart, $r.PrivEnd, $r.PrivPeak, $r.PrivDelta)
+    Write-Host ('{0,-10} {1,-7} {2,-22} {3,-24} {4,-9} {5}' -f `
+        $r.Scenario, $r.Seconds, $ws, $pv,
+        ("{0}>{1}" -f $r.HandleFrom, $r.HandleTo),
+        ("{0}/min rise {1:+0.0;-0.0;0.0}MB {2}" -f $r.TailSlope, $r.TailRise, $r.Verdict))
 }
-Write-Host ('-' * 120)
+Write-Host ('-' * 118)
 
 $privPeakAll = [double](($results | Measure-Object PrivPeak -Maximum).Maximum)
 $wsPeakAll   = [double](($results | Measure-Object WsPeak -Maximum).Maximum)
+$privEndAll  = [double](($results | Measure-Object PrivEnd -Maximum).Maximum)
 $rising = @($results | Where-Object { $_.Verdict -like 'RISING*' })
 
 Write-Host ("peak private memory across all scenarios : {0} MB" -f $privPeakAll)
 Write-Host ("peak working set across all scenarios     : {0} MB" -f $wsPeakAll)
+Write-Host ("highest ENDING private memory             : {0} MB" -f $privEndAll)
 if ($rising.Count -eq 0) {
     Write-Host 'verdict: no scenario shows a rising tail -- no leak detected.'
 } else {
     Write-Host ("verdict: {0} scenario(s) show a rising tail -- investigate before setting a red line." -f $rising.Count)
+    foreach ($r in $rising) {
+        Write-Host ("        {0}: tail rose {1} MB over the last third ({2} s), handles {3}" -f `
+            $r.Scenario, $r.TailRise, $r.Seconds, $r.HandleDelta)
+    }
 }
 Write-Host ("CSV = {0}" -f $OutCsv)
 Write-Host ('The red line gates on the PRIVATE MEMORY column. The working set is')
@@ -327,5 +347,7 @@ Write-Host ('reported for information only: the gap between the two is the share
 Write-Host ('framework DLL pages (Microsoft.UI.Xaml.dll and friends), which are')
 Write-Host ('mapped into every process that uses the framework and are not owned')
 Write-Host ('by this one.')
+Write-Host ('NOTE on the slope: it is normalised to MB/min, so a SHORT phase turns a')
+Write-Host ('1 MB wobble into a scary-looking rate. Read the absolute delta column.')
 
 exit 0
