@@ -61,5 +61,22 @@ namespace LingwuSysmon
         Int32   ResultSortMode   { get; };
         Int32   ResultIntervalMs { get; };
         Boolean ResultAutoStart  { get; };
+
+        // Let the window really close from now on.
+        //
+        // The window normally hides itself instead of closing, because a closed
+        // WinUI 3 Window cannot be reused (Activate() throws) and creating a new
+        // one per open leaks native resources linearly. See README pitfall 24.
+        //
+        // The app must still be able to shut down, and that needs this window to
+        // be *closed*, not hidden: while any Window object is alive the XAML
+        // message loop keeps running, so the process would linger with no
+        // windows left. AppWindow.Destroy() does NOT help -- it kills the native
+        // HWND but leaves the XAML window count above zero, so the loop never
+        // ends. Only a real Window::Close() unregisters it.
+        //
+        // So the owner calls AllowClose() and then Close(). After AllowClose()
+        // the internal AppWindow.Closing handler stops cancelling the close.
+        void AllowClose();
     }
 }

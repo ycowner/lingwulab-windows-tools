@@ -105,6 +105,17 @@ private:
     void OnOpenSettings();
     // 设置窗口关闭后回读并应用。 Accepted() 为 false（用户按了取消）时什么都不做。
     void ApplySettingsResult(winrt::LingwuSysmon::SettingsWindow const& w);
+    // 轮询设置窗口的结果并应用。
+    //
+    // 【为什么是轮询而不是事件】
+    // 设置窗口改成「关闭时只隐藏、不销毁」（WinUI 3 的 Window 关闭后不可复用，
+    // 而每次新建一个会线性泄漏原生资源），于是 Window.Closed 永远不再触发，
+    // 原来那条「靠 Closed 回读结果」的通路断了。
+    // SettingsWindow 对外只暴露 Accepted() / Result*() 这几个取值接口，
+    // 没有「结果变了」的事件可用；而这个应用本来就有一个 100 ms 的
+    // DispatcherQueueTimer 在轮询采样脏标志（见 OnTimerTick），
+    // 在那里顺带读一次取值，开销可以忽略，延迟也只有 100 ms（用户无感）。
+    void ApplyPendingSettingsResult();
 
     // ---- 托盘 / 生命周期（Phase 4）----------------------------------------
     // 全部由托盘模块的回调或窗口子类调用，所以都是 private。
@@ -216,8 +227,26 @@ private:
 
     // 设置窗口。**必须持有强引用**：XAML 框架不延长我们的生命周期，
     // 局部变量一旦析构窗口就跟着没了（与 App::window 同理）。
-    // 常驻复用而不是每次新开：重复点「设置」不该叠出一堆窗口。
+    // 开着的时候复用同一个对象：重复点「设置」不该叠出一堆窗口。
+    //
+    // **只构造一次**，之后靠「隐藏 / 显示」复用（详见 SettingsWindow.xaml.cpp
+    // 构造函数里那段长注释）：
+    //   · WinUI 3 的 Window 关闭后不可复用，复用已关闭窗口会让 Activate()
+    //     抛异常，而异常穿过托盘的窗口过程 = 进程直接消失（0xC0000409）；
+    //   · 而「每次打开都新建一个」实测每轮线性泄漏约 36 个句柄 + 1.8 MB
+    //     私有内存，无上界，直接撞穿 145 MB 红线。
     winrt::LingwuSysmon::SettingsWindow settingsWindow_{ nullptr };
+
+    // 本轮设置窗口的结果（「确定 / 取消」）是否已经被回收过了。
+    //
+    // 为什么要单独一个标志：设置窗口改成「关闭时只隐藏」之后，Closed 事件
+    // 永远不再触发，主窗口只能靠**轮询** settingsWindow_.Accepted() 来拿结果。
+    // 而 Accepted() 在用户按过「确定」之后会一直是 true，所以必须由主窗口
+    // 自己记一份「这一轮已经收过了」，否则每 100 ms 就会重复应用一次。
+    //
+    // 置位时机：每次打开设置窗口时置 false（准备接收新一轮的结果），
+    // 回收成功时置 true。
+    bool settingsResultConsumed_ = true;
 
     std::shared_ptr<MenuHost> menuHost_{};
     HWND hwnd_{ nullptr };

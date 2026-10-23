@@ -239,6 +239,12 @@ if ($hadIni) {
     Remove-Item $Ini -Force
     Write-Host 'ini removed (did not exist before test)'
 }
+# 备份文件本身也要清掉：还原完 ini 之后它就是一份躺在用户 AppData 里的
+# 配置副本，不该留下（2026-10-21 修：每次跑这个脚本都会留一个 .setbak）。
+if (Test-Path $IniBackup) {
+    Remove-Item $IniBackup -Force
+    Write-Host 'ini backup removed'
+}
 
 Write-Host "SHOT1=$shot1"
 Write-Host "SHOT2=$shot2"

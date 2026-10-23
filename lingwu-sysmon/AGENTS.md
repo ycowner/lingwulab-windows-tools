@@ -106,6 +106,28 @@ Popup 与 XamlRoot 内容呈现），与隐藏方式无关。而勾了「记住�
 **踩坑**：判据只能用 Win32 的 `IsWindowVisible(hwnd_)` ——
 XAML 那个 `Visibility` 在本工程**不存在**（见踩坑 8）。
 
+### 设置窗口「构造一次 + 隐藏/显示」（2026-10-21，坑掉一次线性泄漏）
+
+设置窗口改成**只构造一次**，关闭时只 `AppWindow().Hide()`（详见铁律 16 与
+README 踩坑 24）。这一步不是洁癖，是**被实测逼出来的**：
+
+| 实现 | 30 轮「开→关」后的私有内存 | 句柄数 |
+|---|---|---|
+| 每次打开都 `make<SettingsWindow>()` | 139.5 → **169.9 MB**（+30.4，**越过 145 MB 红线**） | 893 → **1272**（+379，线性不收敛） |
+| 构造一次 + 隐藏/显示（现行） | 133.1 → **140.8 MB**（+7.7，曲线走平） | 868 → **942**（+74 后稳定，30 轮只动 1 个） |
+
+判据用 AGENTS.md 自己那条规则：「真泄漏会持续上升且通常伴随句柄增长」。
+对照实验（同样 120 秒）：**完全不开设置窗口**纯静置时句柄数 895 → 893 持平，
+私有内存 103.9 → 131.9 MB（+28 MB = 一次性框架预热，见上文）——
+所以那 +36 句柄/轮确实是「每轮新建窗口漏掉的」，不是应用稳态。
+
+**教训**：WinUI 3 的 `Window` 关闭后不可复用，所以「关掉就重新 new 一个」
+看起来是唯一出路 —— 但它每轮漏一整个窗口的原生资源（句柄 + 私有内存），
+**无上界**。正确做法是**别让它被销毁**：`Hide` 代替 `Close`，
+退出时用 `AllowClose()` + `Window::Close()` 让它真正关闭
+（**`AppWindow::Destroy()` 不行** —— 它只销毁原生 HWND，框架的窗口计数不归零，
+消息循环不结束，进程会僵留在「窗口没了但还在」的状态）。
+
 ### 窗口尺寸不是内存变量（2026-10-14 受控 A/B 实测）
 
 主窗口默认尺寸从 1040×700 放大到工作区的 70%（本机 2015×1192，约 2 倍面积）之后，
@@ -150,7 +172,13 @@ CPU↓ 量化前 `replaced` 136~167、内存 132.4 MB。真正的变量是
 
 - 源码 UTF-8，编译必须带 `/utf-8`
 - **`build.bat` 与所有 `.bat` 必须是纯 ASCII + CRLF**，混入中文会让 cmd 逐行丢字符
-- **`.idl` 与 `.ps1` 必须纯 ASCII**：midl 按系统 ANSI (936) 读，中文报 `C4819` 且撞 `/WX`
+- **`.idl` 必须纯 ASCII**：midl 按系统 ANSI (936) 读，中文报 `C4819` 且撞 `/WX`
+- **`.ps1` 不是纯 ASCII**：实测 `tools\` 下的脚本普遍带中文注释与中文字面量，
+  编码是 **UTF-8 无 BOM + LF**。所以 `.ps1` 的约束是「**只能用 `pwsh` 跑**」
+  （见下面「验证要求」），不是「必须纯 ASCII」。本仓库源码统一 **LF** 行尾
+  （只有 `.bat` 是 CRLF）
+- `.ps1` 里写带变量的中文字符串时注意 `"$i:"` 会被 PowerShell 当成驱动器限定
+  变量，报「没有有效的文本终止符」，要写成 `"${i}:"`
 - `/DNOMINMAX` 已在编译选项里，不要移除
 - 每个 `.cpp` 第一行必须 `#include "pch.h"`（`/Yu"pch.h"` 找不到指令即 `C1010`）
 - `core/metrics.h` 才有 `SortMode` 枚举，`core/settings.h` 没有。用 `SORT_*` 的文件
@@ -203,6 +231,10 @@ README.md「实现要点与踩坑记录」列了 24 条实测踩坑。这里只�
    实测踩过：第二次弹关闭框时把同一个 `CheckBox` 重新 `Append` 进一个新建的
    `StackPanel`（XAML 元素同一时刻只能有一个父节点）→ 抛异常 → 进程没了。
    ⇒ `ContentDialog` 的 `Content` **只装配一次**，绝不重复 `Append`。
+   **（2026-10-21 已落实）** `MainWindow` 的 `Closing` 处理器现在整体由
+   `platform::GuardCallback("window.Closing.onCloseRequested", ...)` 兜住，
+   且 `a.Cancel(true)` 排在所有可能抛异常的语句**之前** —— 一旦 Cancel 生效，
+   本次关闭就不成立，后面即使抛异常，窗口也不会关、进程也不会退出。
 8. **WinUI 3 的 `Window` 没有 `Visibility`**：`IWindow` 只有只读的 `Visible()`，
    没有 `put_Visible`，写 `Visibility = Collapsed` 直接编不过。隐藏只有
    `AppWindow().Hide()` / `AppWindow().Show(true)` 这一套，而 `SW_RESTORE`
@@ -222,6 +254,30 @@ README.md「实现要点与踩坑记录」列了 24 条实测踩坑。这里只�
     `CPU_ASC` 在设置里永远选不到，尽管它们能被主窗口表头设出来。
 14. **单实例定位不能用类名**。WinUI 3 类名全系统统一
     （`WinUIDesktopWin32WindowClass`），要共享内存双份存 HWND。
+15. **Win32 回调边界（窗口过程 / 菜单回调 / Shell 回调）必须包异常兜底**。
+    C++ 异常从 `LRESULT CALLBACK` 逃出去，user32 / shell 层没有 C++ handler，
+    CRT 只能 `std::terminate` → `abort()` → `__fastfail` → **0xC0000409**，
+    进程直接消失且现场全丢（事件日志只有一条异常码，trace 里什么都没有）。
+    统一用 `platform::GuardCallback(tag, fn)`（`src/platform/callback_guard.h`），
+    tag 要能直接指出是哪一条路径。已覆盖：托盘 `WM_TRAY_CB`、托盘菜单五个
+    菜单项、主窗口窗口子类三条分支、`AppWindow.Closing` 处理器。
+16. **WinUI 3 的 `Window` 关闭后不可复用** —— `Close()` 之后对象仍在
+    （成员非空）但 `AppWindow` 已失效，再调 `Activate()` 会抛 `hresult_error`；
+    而异常从托盘菜单回调一路穿过窗口过程 = 进程直接消失（2026-10-20 实测）。
+    **既不能复用已关闭的窗口，也不能每次打开都新建一个** ——
+    后者实测**线性泄漏**原生资源（每轮约 36 个句柄 + 1.8 MB 私有内存，
+    30 轮 = +379 句柄 / +30.4 MB，越过 145 MB 红线）。
+    ⇒ 设置窗口采用「**构造一次 + 隐藏/显示**」：关闭时只 `AppWindow().Hide()`，
+    真正关闭放在主窗口退出时：先 `AllowClose()`（`SettingsWindow.idl` 里新增的
+    方法）放行自己的关闭拦截，再 `Window::Close()`。
+    **不要用 `AppWindow::Destroy()`** —— 实测踩过：它只销毁原生 HWND，
+    **框架的窗口计数不会归零**，消息循环不结束，进程会僵留在「窗口全没了
+    但进程还在」的状态（trace 里 `MainWindow closed` 已打过，进程仍在）。
+    只有真正的 `Window::Close()` 才会把它从框架里注销掉。
+    必须关：只要还有 `Window` 活着，XAML 框架的消息循环就不会结束。
+    连带：`Window.Closed` 不再触发 ⇒ 设置结果改为**轮询**
+    `settingsWindow_.Accepted()` 回收（`ApplyPendingSettingsResult`），
+    靠 `settingsResultConsumed_` 防重复应用。
 
 ## 设置文件契约（向后兼容，不许改）
 
@@ -272,6 +328,18 @@ Invoke 不会误退出进程；托盘按钮始终在。
 **右键菜单文本仍未经 live 验证** —— 弹出它必须真实点击，本机做不到；
 菜单内容靠直读 `src/platform/tray_icon.cpp` 的 `ShowTrayMenu()` 核对
 （五项契约见上一节）。这一条是已知的验证缺口，不要当成已验证。
+
+**设置窗口类改动必须跑 `tools\uisettings2.ps1`**（2026-10-21 新增）。
+它覆盖「开 → 关 → **再开**」这条路径 —— 而「第二次打开」正是 2026-10-20
+那个必现崩溃的**唯一**触发条件。既有 `uisettings.ps1` 只开一次设置窗口、
+从不重开，所以那条路径从来没有被任何测试覆盖过，这就是那个 bug 一直没被
+发现的原因。
+等价路径论证：托盘菜单「设置…」与主窗口的「设置」按钮调用的是**同一个**
+`MainWindow::OnOpenSettings()`（前者经 `g_cb.onSettings`，后者经
+`SettingsButton().Click`），所以用主窗口按钮做自动回归即等价覆盖托盘路径的根因；
+托盘右键菜单本身的 live 验证仍是上面那条已知缺口，需要人工确认。
+该脚本同时量「反复开关」的私有内存增量 —— 设置窗口改成「构造一次 + 隐藏/显示」
+就是为了让这个增量不随轮数线性增长（详见 README 踩坑 24）。
 
 跨进程 UIA 枚举**必须** `AndCondition(ControlTypeProperty, ProcessIdProperty)`，
 绝不能只用 ControlType 在桌面根 FindAll 再按名字过滤（曾误点别的应用）。

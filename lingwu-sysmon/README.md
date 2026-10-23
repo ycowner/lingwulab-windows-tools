@@ -433,10 +433,17 @@ tlog 跨构建累积）；`.map` 的 Static symbols 段出现 `msvcprt:MSVCP140.
 
 `/Yu"pch.h"` 找不到指令即 `C1010`。
 
-### 17. 编码：源码 UTF-8，`build.bat` / `.idl` / `.ps1` 必须纯 ASCII
+### 17. 编码：源码 UTF-8，`build.bat` / `.idl` 必须纯 ASCII，`.ps1` 是 UTF-8 无 BOM
 
-- `build.bat` 混入中文会让 cmd 逐行丢字符
+- `build.bat` 混入中文会让 cmd 逐行丢字符（它是**纯 ASCII + CRLF**）
 - `.idl` 必须纯 ASCII：midl 按系统 ANSI (936) 读，中文报 `C4819` 且撞 `/WX`
+- **`.ps1` 不是纯 ASCII** —— 实测 `tools\` 下的脚本普遍带中文注释与中文字面量，
+  编码是 **UTF-8 无 BOM + LF**。这条约束只对 `.idl` / `.bat` 成立，
+  对 `.ps1` 真正的要求是「**只能用 `pwsh` 跑**」（见踩坑 20 与本节下面一条）：
+  Windows PowerShell 5.1 按 ANSI 936 读，会把中文切碎后吞掉引号。
+  另注：`.ps1` 里的中文要写成**字符串字面量**时，注意 `"$i:"` 会被 PowerShell
+  当成驱动器限定变量（`$i:` = 「i 盘上的变量」），报「没有有效的文本终止符」，
+  要写成 `"${i}:"`。
 - 读文件内容不要用 PowerShell `Get-Content` 复核（代码页 936 会把 UTF-8 中文显示成乱码）；
   MSBuild 日志是 GBK，要 `[System.Text.Encoding]::GetEncoding(936)` 读
 - 控制台代码页会把中文吞掉，trace 落盘用 `WideCharToMultiByte(CP_UTF8)` + `WriteFile`
@@ -548,6 +555,63 @@ AppWindow().MoveAndResize(RectInt32{
 `OverlappedPresenter.PreferredMinimumWidth/Height`（本项目用的 720×420）
 同样是物理像素单位，本机 200% 下只有 360×210 逻辑像素。
 微软文档没写单位，是实测 + 二手资料交叉确认的；已知偏小，本次未改。
+
+### 24. WinUI 3 的 `Window` 关闭后不可复用 —— 异常穿透 Win32 窗口过程 = 进程直接消失
+
+**现象**：从**托盘右键菜单**点「设置…」，只要设置窗口**之前被关闭过一次**，
+就**必现**进程退出 —— 没有对话框、没有提示、任务栏上的图标直接没了。
+
+**现场**：事件日志（Application / EventId 1000）只有一条
+
+```
+LingwuSysmon.exe  异常 0xC0000409  偏移 0x3f739
+```
+
+用 `build/obj/Release/LingwuSysmon.map` 符号化：`0x14003f739` = `abort`
+（VA `0x14003f704`）+ `0x35` —— 确证是 **CRT `std::terminate` 路径**
+（`abort` → `__fastfail(FAST_FAIL_FATAL_APP_EXIT)`），**不是随机内存破坏**。
+
+**根因**（三段，缺一不可）：
+
+1. `Window.Close()` 之后，`Window` **对象仍然存在**（成员依然非空），
+   只是 `AppWindow` 已经失效 → 再调 `Activate()` 抛 `hresult_error`。
+2. 原代码用 `if (!settingsWindow_)` 判断「要不要新建」，于是第二次打开时
+   走进了「复用已关闭窗口」的分支 → 对着一个坏窗口调 `Activate()`。
+3. 该异常从 `onSettings` → `ShowTrayMenu` → `TrayHostProc`
+   （一个 `LRESULT CALLBACK` 窗口过程）**一路逃出，整条链零 try/catch**。
+   user32 / shell 层没有 C++ handler，CRT 只能 `std::terminate` → `abort()`
+   → `0xC0000409`。现场全丢：trace 里也什么都没有（异常在第一条日志之前抛出）。
+
+**修法两条，都要**：
+
+1. **不复用已关闭的 `Window`**，而且**也不能每次打开都新建一个** ——
+   后者实测**线性泄漏**原生资源：每新建/关闭一轮，句柄数 +36 左右、
+   私有内存 +1.8 MB，无上界。实测 30 轮：私有内存 139.5 → 169.9 MB
+   （+30.4 MB，越过 145 MB 红线），句柄数 893 → 1272（+379，线性不收敛）。
+   对照实验：同时长纯静置（完全不开设置窗口）句柄数持平（895 → 893），
+   私有内存的 +28 MB 是一次性框架预热（见踩坑 19），与设置窗口无关。
+   ⇒ 最终采用「**构造一次 + 隐藏/显示**」：关闭时只 `AppWindow().Hide()`，
+   窗口对象一直活着，每轮零分配，泄漏从根上消失。
+   真正关闭放在主窗口退出时：先 `AllowClose()` 放行拦截，再 `Window::Close()`。
+   **注意不能用 `AppWindow::Destroy()`** —— 实测踩过：它只销毁原生 HWND，
+   **框架的窗口计数不会归零**，消息循环照样不结束，表现是「窗口全没了但
+   进程还在」的僵留（trace 里 `MainWindow closed` 已经打过，进程仍在）。
+   只有真正的 `Window::Close()` 才会把它从框架里注销掉。
+   必须关：只要还有一个 `Window` 活着，XAML 框架的消息循环就不会结束。
+2. **所有 Win32 回调边界（窗口过程 / 菜单回调）包异常兜底**，
+   统一用 `platform::GuardCallback(tag, fn)`（见 `src/platform/callback_guard.h`），
+   tag 要能直接指出是哪一条路径。C++ 异常从 `LRESULT CALLBACK` 逃出去
+   就是「进程直接消失」，这个坑太贵，不能只靠「不写错」来防。
+
+**连带变化**：设置窗口的关闭改成隐藏之后，`Window.Closed` 永远不再触发，
+原来「靠 `Closed` 回读结果」的通路断了。主窗口改成**轮询**
+`settingsWindow_.Accepted()` 回收结果（挂在那本来就在跑的 100 ms
+`DispatcherQueueTimer` 上，见 `ApplyPendingSettingsResult`），
+并用一个 `settingsResultConsumed_` 标志防止每 100 ms 重复应用一次。
+
+**为什么这个 bug 一直没被发现**：既有的 `tools/uisettings.ps1` 只**打开一次**
+设置窗口就关闭、**从不重开** —— 而「第二次打开」正是唯一的崩溃触发条件。
+现在补了 `tools/uisettings2.ps1` 专门覆盖「开 → 关 → 再开」这条路径。
 
 ## 版本号
 
@@ -700,7 +764,8 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1
 |---|---|
 | `uicheck.ps1` | 排序重排 / 还原、搜索过滤、状态栏、内存采样 |
 | `uisort.ps1` | 五档排序逐档落盘 |
-| `uisettings.ps1` | 设置窗口 4 项控件、确定 / 取消、ini 往返、自启开关只读 |
+| `uisettings.ps1` | 设置窗口 4 项控件、确定 / 取消、ini 往返、自启开关只读（测完自动清 ini 备份） |
+| `uisettings2.ps1` | 设置窗口**二次打开**（开→关→再开）+ 反复开关的私有内存（踩坑 24 的回归） |
 | `uiapply.ps1` | 设置应用后运行时生效 |
 | `uimenu.ps1` | 右键上下文菜单 |
 | `trayclick.ps1` | 托盘 7 个场景：右键菜单 / 左键 / X 最小化 / 退出 / 单实例 / 设置 / 聚合 |

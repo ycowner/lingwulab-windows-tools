@@ -28,6 +28,7 @@
 // 紧接着 case 标签退化成 C2051/C4065，看起来像语法写错了。
 #include "core/autostart.h"
 #include "core/metrics.h"
+#include "platform/trace.h"
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
@@ -57,6 +58,48 @@ SettingsWindow::SettingsWindow() {
     // WireEvents 里要碰 DragRegion()/OkButton() 等控件 —— 它们只在上面的
     // InitializeComponent 之后才真实存在。
     WireEvents();
+
+    // 【关闭时只隐藏，不销毁】
+    //
+    // 原因有两条，缺一不可：
+    //
+    // ① WinUI 3 的 Window 在 Close() 之后**不可复用** —— 再调 Activate()
+    //    会抛 hresult_error。所以「关掉就重新 new 一个」在功能上是唯一出路
+    //    （2026-10-20 那个崩溃就是这么来的：异常从托盘的 LRESULT CALLBACK
+    //    窗口过程逃出去 → std::terminate → abort() → 0xC0000409）。
+    //
+    // ② 但「每次 new 一个」这条路实测走不通 —— **线性泄漏**原生资源：
+    //    每新建/关闭一轮，句柄数 +36 左右、私有内存 +1.8 MB，无上界。
+    //    实测 30 轮：私有内存 139.5 → 169.9 MB（+30.4 MB，越过 145 MB 红线），
+    //    句柄数 893 → 1272（+379，线性不收敛）。
+    //    对照实验：同时长纯静置（完全不开设置窗口）句柄数持平
+    //    （895 → 893），私有内存的 +28 MB 是一次性框架预热（AGENTS.md 已记录），
+    //    与设置窗口无关 —— 所以那 +36 句柄/轮就是每轮新建窗口漏掉的。
+    //
+    // 所以改成「构造一次 + 隐藏/显示」：关闭时只 Hide，窗口对象一直活着，
+    // 每轮零分配，泄漏从根上消失。用户看到的行为完全一样（窗口消失、
+    // 任务栏不留按钮）。
+    //
+    // 真正关闭由主窗口退出时完成：先 AllowClose()（放行下面这个拦截），
+    // 再 Window::Close()。
+    //
+    // 【为什么不用 AppWindow::Destroy()】实测踩过：它只销毁原生 HWND，
+    // **框架的窗口计数不会归零**，消息循环照样不结束 —— 表现是「窗口全没了
+    // 但进程还在」的僵留（trace 里 `MainWindow closed` 已经打过，进程仍在）。
+    // 只有真正的 Window::Close() 才会把它从框架里注销掉。
+    // 必须关：只要还有一个 Window 活着，XAML 框架的消息循环就不会结束。
+    AppWindow().Closing([this](auto&&,
+        winrt::Microsoft::UI::Windowing::AppWindowClosingEventArgs const& args) {
+        // 主窗口已经放行（要退出了）→ 这次关闭必须成立，否则进程会僵留。
+        if (allowClose_) return;
+        args.Cancel(true);
+        HideSelf();
+    });
+}
+
+// 允许本窗口真正关闭。见 SettingsWindow.idl 里那段说明。
+void SettingsWindow::AllowClose() {
+    allowClose_ = true;
 }
 
 void SettingsWindow::ApplyBackdrop() {
@@ -108,6 +151,13 @@ void SettingsWindow::LoadFrom(bool aggregate, int sortMode, int intervalMs, bool
     // 主窗口在 make<SettingsWindow>() 之后、Activate() 之前调用。
     // 此时构造函数已经跑完 InitializeComponent + WireEvents，控件全都真实存在，
     // 所以这里既写成员（供「确定」时兜底）也直接灌控件（保证用户看到的就是现状）。
+    //
+    // 【accepted_ 必须在这里复位】
+    // 主窗口是**轮询** Accepted() 来回收结果的（不是靠 Closed 事件 ——
+    // 窗口改成「关闭时只隐藏」之后 Closed 永远不触发）。
+    // 每次打开都复位一次，才不会把上一轮的「确定」结果重复应用一遍。
+    accepted_ = false;
+
     resAggregate_  = aggregate;
     resSortMode_   = sortMode;
     resIntervalMs_ = intervalMs;
@@ -181,12 +231,27 @@ void SettingsWindow::OnOk() {
 
     // 设置由主窗口统一落 ini（它持有 settings_ 并负责 SaveSettings），
     // 这里只把结果通过 Accepted() / Result*() 交回去。
-    Close();
+    //
+    // 【为什么是隐藏而不是 Close】
+    // 见构造函数里那段长注释：关掉就销毁 → 不可复用 → 只能每次新建 →
+    // 每轮线性泄漏原生资源。改成只隐藏，窗口对象一直活着。
+    // 主窗口靠轮询 Accepted() 回收结果（见 MainWindow::ApplyPendingSettingsResult）。
+    HideSelf();
 }
 
 void SettingsWindow::OnCancel() {
     accepted_ = false;
-    Close();
+    HideSelf();
+}
+
+// 隐藏自己（而不是 Close）。见构造函数里那段长注释。
+void SettingsWindow::HideSelf() {
+    try {
+        AppWindow().Hide();
+    } catch (winrt::hresult_error const& e) {
+        LINGSYSMON_TRACE("SettingsWindow: AppWindow::Hide failed hresult=0x%08X msg=%ls",
+                         static_cast<unsigned>(e.code().value), e.message().c_str());
+    }
 }
 
 }  // namespace winrt::LingwuSysmon::implementation

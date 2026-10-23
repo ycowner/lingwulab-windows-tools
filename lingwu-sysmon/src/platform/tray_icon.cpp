@@ -2,6 +2,7 @@
 
 #include "tray_icon.h"
 
+#include "callback_guard.h"
 #include "core/settings.h"
 #include "trace.h"
 
@@ -10,8 +11,14 @@
 
 #pragma comment(lib, "shell32.lib")
 
-// 本文件全部是纯 Win32 代码，不碰任何 WinRT 投影类型。
+// 本文件全部是纯 Win32 代码，不持有任何 WinRT 投影对象。
 // 与 WinUI 世界的唯一接口是 InitTrayIcon 传进来的那组 std::function。
+//
+// 唯一的例外：callback_guard.h 里的 winrt::hresult_error。那是**异常类型**
+// 而不是投影对象，用它把错误码落进 trace —— 托盘链路上的回调最终会碰
+// WinRT，抛出来的异常必须在这个边界上被兜住，绝不能穿过窗口过程
+// （穿过去 = CRT std::terminate = 0xC0000409 = 进程直接消失）。
+// 详见 callback_guard.h 顶部的长注释。
 
 namespace platform {
 
@@ -133,6 +140,16 @@ void ShowTrayMenu(HWND owner) {
     HMENU m = CreatePopupMenu();
     if (!m) return;
 
+    // RAII：菜单句柄一定要还回去。
+    // 原来 DestroyMenu 在函数末尾，中途任何一处抛异常都会把它漏掉。
+    // （有了 GuardCallback 之后异常已经不会逃出，但这是双保险。）
+    struct MenuGuard {
+        explicit MenuGuard(HMENU h_) : h(h_) {}
+        ~MenuGuard() { if (h) ::DestroyMenu(h); }
+        HMENU h;
+    };
+    MenuGuard menuGuard{ m };
+
     const bool agg = g_cb.getAggregate ? g_cb.getAggregate() : false;
 
     AppendMenuW(m, MF_STRING, IDM_TRAY_MAIN, L"显示主界面");
@@ -147,32 +164,56 @@ void ShowTrayMenu(HWND owner) {
     GetCursorPos(&pt);
     // 必须 SetForegroundWindow，否则菜单弹完点空白处不消失（经典 Win32 坑）。
     SetForegroundWindow(owner);
-    const int cmd = static_cast<int>(TrackPopupMenu(
-        m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0, owner, nullptr));
+    int cmd = 0;
+    // TrackPopupMenu 本身是纯 Win32、不会抛 C++ 异常，但这里仍然包一层，
+    // 保持「菜单这条边界上的一切都在兜底层里」的一致性。
+    platform::GuardCallback("tray.trackPopup", [&]{
+        cmd = static_cast<int>(TrackPopupMenu(
+            m, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, pt.x, pt.y, 0, owner, nullptr));
+    });
     // TrackPopupMenu 配合 TPM_RETURNCMD 返回后要补一条 WM_NULL，
     // 否则偶尔出现菜单已消失但按键消息被吃掉的现象。
     PostMessageW(owner, WM_NULL, 0, 0);
 
+    // 五个菜单项各自兜一层，tag 直接指明是哪一项出的问题 ——
+    // 出事时 trace 里只有这一行，读的人没有第二次机会去猜。
+    //
+    // 【这里为什么必须有兜底】g_cb.onXxx 最终会调到 MainWindow 的成员函数，
+    // 那些函数里会碰 WinRT（AppWindow.Show / Window.Activate / XAML 属性设值）。
+    // 任何一个抛 hresult_error，异常就会一路往上穿过本函数、穿过
+    // TrayHostProc 这个 LRESULT CALLBACK 窗口过程 —— user32 层没有 C++ handler，
+    // CRT 只能 std::terminate → abort() → 0xC0000409，进程直接没了。
+    // 2026-10-20 的真实崩溃就是这么来的。
     switch (cmd) {
         case IDM_TRAY_MAIN:
-            if (g_cb.onShowMain) g_cb.onShowMain();
+            platform::GuardCallback("tray.onShowMain", [&]{
+                if (g_cb.onShowMain) g_cb.onShowMain();
+            });
             break;
         case IDM_TRAY_SETTINGS:
-            if (g_cb.onSettings) g_cb.onSettings();
+            platform::GuardCallback("tray.onSettings", [&]{
+                if (g_cb.onSettings) g_cb.onSettings();
+            });
             break;
         case IDM_TRAY_RECREATE:
-            RecreateTrayIcon();
+            platform::GuardCallback("tray.onRecreate", [&]{
+                RecreateTrayIcon();
+            });
             break;
         case IDM_TRAY_AGGREGATE:
-            if (g_cb.setAggregate) g_cb.setAggregate(!agg);
+            platform::GuardCallback("tray.onAggregate", [&]{
+                if (g_cb.setAggregate) g_cb.setAggregate(!agg);
+            });
             break;
         case IDM_TRAY_EXIT:
-            if (g_cb.onExit) g_cb.onExit();
+            platform::GuardCallback("tray.onExit", [&]{
+                if (g_cb.onExit) g_cb.onExit();
+            });
             break;
         default:
             break;
     }
-    DestroyMenu(m);
+    // DestroyMenu 由 menuGuard 负责，这里不再调。
 }
 
 // ---------------------------------------------------------------- 消息窗口
@@ -206,25 +247,34 @@ LRESULT CALLBACK TrayHostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_TRAY_CB: {
             const UINT code = LOWORD(lp);
             LINGSYSMON_TRACE("tray: callback code=0x%04X version=%u", code, g_version);
-            // 右键：两版 shell 都发 WM_RBUTTONUP / WM_CONTEXTMENU。
-            // 两个都接是因为有的 shell 只发其中一个（只发 WM_RBUTTONUP 时
-            // 不收它就没有菜单，只发 WM_CONTEXTMENU 时同理）。
-            if (code == WM_RBUTTONUP || code == WM_CONTEXTMENU) {
-                ShowTrayMenu(hwnd);
-                return 0;
-            }
-            // 左键 / 回车：把主窗口叫出来。按协商到的版本分流，见函数上方注释。
-            if (g_version >= NOTIFYICON_VERSION_4) {
-                if (code == NIN_SELECT || code == NIN_KEYSELECT) {
-                    if (g_cb.onShowMain) g_cb.onShowMain();
-                    return 0;
+            // 整段通知码处理都在兜底层里。
+            //
+            // 【为什么这里必须有兜底】下面会调到 g_cb.onXxx，而那些回调最终会碰
+            // WinRT。C++ 异常从本窗口过程（LRESULT CALLBACK）逃出去之后，
+            // user32 层没有 C++ handler，CRT 只能 std::terminate → abort() →
+            // 0xC0000409，进程直接消失且现场全丢。详见 callback_guard.h。
+            //
+            // 注意：原来的 return 语句在这个 lambda 里会**从 lambda 返回**，
+            // 不是从窗口过程返回 —— 写错会静默改变消息语义。所以这里改用
+            // if / else if 结构，窗口过程本身照常 return 0。
+            platform::GuardCallback("tray.cb", [&]{
+                // 右键：两版 shell 都发 WM_RBUTTONUP / WM_CONTEXTMENU。
+                // 两个都接是因为有的 shell 只发其中一个（只发 WM_RBUTTONUP 时
+                // 不收它就没有菜单，只发 WM_CONTEXTMENU 时同理）。
+                if (code == WM_RBUTTONUP || code == WM_CONTEXTMENU) {
+                    ShowTrayMenu(hwnd);
+                } else if (g_version >= NOTIFYICON_VERSION_4) {
+                    // 左键 / 回车：把主窗口叫出来。按协商到的版本分流，
+                    // 见函数上方注释。
+                    if (code == NIN_SELECT || code == NIN_KEYSELECT) {
+                        if (g_cb.onShowMain) g_cb.onShowMain();
+                    }
+                } else {
+                    if (code == WM_LBUTTONUP || code == WM_LBUTTONDBLCLK) {
+                        if (g_cb.onShowMain) g_cb.onShowMain();
+                    }
                 }
-            } else {
-                if (code == WM_LBUTTONUP || code == WM_LBUTTONDBLCLK) {
-                    if (g_cb.onShowMain) g_cb.onShowMain();
-                    return 0;
-                }
-            }
+            });
             return 0;
         }
 

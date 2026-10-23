@@ -32,6 +32,7 @@
 #include "core/autostart.h"
 #include "core/terminate.h"
 #include "core/top10.h"
+#include "platform/callback_guard.h"
 #include "platform/trace.h"
 #include "platform/tray_icon.h"
 #include "platform/window_decor.h"
@@ -109,12 +110,25 @@ bool HitTestRow(MenuHost* host, winrt::Windows::Foundation::Point const& clientP
 }
 LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                           UINT_PTR /*id*/, DWORD_PTR ref) {
+    // 【这个函数是窗口过程边界，异常绝不能从这里逃出去】
+    // 下面三条分支都会调到 WinRT：HitTestRow 里的 list.SelectedIndex /
+    // MenuFlyout.ShowAt，activateMain 最终的 AppWindow().Show，
+    // 以及 OnTaskbarCreated 的整套托盘重建。
+    // 异常一旦穿过 LRESULT CALLBACK，user32 层没有 C++ handler，
+    // CRT 只能 std::terminate → abort() → 0xC0000409，进程直接消失。
+    // 所以三条分支各自包一层 GuardCallback，且**不改变消息转发语义**：
+    // 兜底之后照常走原来的 return / DefSubclassProc。
+
     if (msg == WM_CONTEXTMENU) {
         POINT pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
         ::ScreenToClient(hwnd, &pt);
-        if (HitTestRow(reinterpret_cast<MenuHost*>(ref),
+        bool handled = false;
+        platform::GuardCallback("win32.HostProc.ctxmenu", [&]{
+            handled = HitTestRow(reinterpret_cast<MenuHost*>(ref),
                        winrt::Windows::Foundation::Point{ static_cast<float>(pt.x),
-                                                          static_cast<float>(pt.y) })) {
+                                                          static_cast<float>(pt.y) });
+        });
+        if (handled) {
             return 0;   // 吃掉，WinUI 不要再自己弹一次
         }
     }
@@ -132,7 +146,9 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
         if (msg == am) {
             LINGSYSMON_TRACE("HostProc: activate message received, restoring window");
             auto* host = reinterpret_cast<MenuHost*>(ref);
-            if (host && host->activateMain) host->activateMain();
+            platform::GuardCallback("win32.HostProc.activate", [&]{
+                if (host && host->activateMain) host->activateMain();
+            });
             return 0;
         }
     }
@@ -146,7 +162,9 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     if (const UINT tc = platform::TaskbarCreatedMessageId()) {
         if (msg == tc) {
             LINGSYSMON_TRACE("HostProc: TaskbarCreated, forwarding to tray");
-            platform::OnTaskbarCreated();
+            platform::GuardCallback("win32.HostProc.taskbarCreated", [&]{
+                platform::OnTaskbarCreated();
+            });
             return 0;
         }
     }
@@ -358,8 +376,25 @@ MainWindow::MainWindow() {
                          quitting_ ? 1 : 0, dialogOpen_->load() ? 1 : 0,
                          settings_.closeAction);
         if (quitting_) return;   // 托盘菜单的「退出」/ 确认框的「退出程序」：放行
-        a.Cancel(true);          // 本次关闭一律不成立
-        OnCloseRequested();
+
+        // 【顺序不能反：Cancel 必须排在所有可能抛异常的语句之前】
+        // 一旦 Cancel 生效，本次关闭就不成立 —— 后面即使抛异常，
+        // 窗口也不会关、进程也不会退出。
+        // 反过来（先做可能抛的事、后 Cancel）就复现了 AGENTS.md 铁律 7
+        // 那个坑：异常逃出处理器 → Cancel 作废 → 窗口照关、进程直接退出，
+        // 症状与「退出逻辑写错」完全无法区分。
+        a.Cancel(true);
+
+        // 【异常绝不能逃出这个处理器】（AGENTS.md 铁律 7 / README 踩坑 7）
+        // OnCloseRequested 下面会碰 ContentDialog、AppWindow.Hide 等 WinRT 调用。
+        // 这里兜住之后，即使它抛了，也只是「这次关闭没弹框」，
+        // 不会变成「窗口关了、进程也没了」。
+        //
+        // dialogOpen_ 闸门不会被弄死：ShowClosePrompt 自带 try/catch，
+        // 失败时会把闸门复位（见它的 catch 分支）。
+        platform::GuardCallback("window.Closing.onCloseRequested", [this]{
+            OnCloseRequested();
+        });
     });
     core::LoadSettings(settings_);
     // 注册表才是自启的唯一事实源；ini 里那个键只当参考。
@@ -495,6 +530,20 @@ void MainWindow::WireEvents() {
         // ClearPublishedHwnd 也在这里：共享内存里的 HWND 已经指向
         // 一个即将销毁的窗口，下一个实例读到它会往死窗口发消息。
         platform::ClearPublishedHwnd();
+
+        // 设置窗口也要真正关闭。正常退出路径上 RequestExit 已经关过，
+        // 这里是兜底：只要还有一个 Window 活着，XAML 框架的消息循环就不会结束，
+        // 进程会变成「窗口全没了但进程还在」的僵留状态。
+        if (settingsWindow_) {
+            try {
+                settingsWindow_.AllowClose();
+                settingsWindow_.Close();
+            } catch (...) {
+                // 关闭流程里不能再抛：抛出去会让下面的托盘清理做不成。
+            }
+            settingsWindow_ = nullptr;
+        }
+
         platform::ShutdownTrayIcon();
         LINGSYSMON_TRACE("MainWindow closed");
     });
@@ -522,6 +571,10 @@ void MainWindow::StartSampling() {
 }
 // ---------------------------------------------------------------- 刷新
 void MainWindow::OnTimerTick() {
+    // 设置窗口的结果回收（详见 ApplyPendingSettingsResult）。
+    // 必须排在 ConsumeDirty 的早退**之前** —— 采样不一定有脏数据，
+    // 但用户按了「确定」之后结果要立刻被收走。
+    ApplyPendingSettingsResult();
     if (!sampler_.ConsumeDirty()) return;
     Refresh();
 }
@@ -898,25 +951,62 @@ void MainWindow::OnEndTask() {
 // ---------------------------------------------------------------- 设置
 void MainWindow::OnOpenSettings() {
     LINGSYSMON_TRACE("Settings clicked");
-    // 常驻复用：重复点「设置」只 Activate 已存在的那个，不叠窗口。
-    if (!settingsWindow_) {
-        settingsWindow_ = winrt::make<SettingsWindow>();
-        settingsWindow_.LoadFrom(aggregate_, sortMode_, settings_.intervalMs,
-                                 settings_.autoStart);
-        // 结果回读挂在 Closed 上：这版 cppwinrt 没有 IAsyncOperation::then，
-        // Activate() 又不等窗口关闭，所以只能靠关闭事件把结果交回来。
-        // Closed 是 RoutedEventHandler，lambda 捕获 this 是安全的 ——
-        // 本窗口活着它才可能被调，本窗口析构时框架会先摘掉这些处理器。
-        settingsWindow_.Closed([this](auto&&, auto&&) {
-            ApplySettingsResult(settingsWindow_);
-        });
-    } else {
-        // 已经开过一次：把**当前**生效值重新灌进去，
+    // 【先收上一轮的结果，再开新一轮】
+    // 顺序不能反：LoadFrom 会把设置窗口的 accepted_ 复位，
+    // 如果先把结果复位了，上一轮的「确定」就再也读不到了。
+    // 这一步也让「按完确定、100 ms 内又点开设置」这种极快操作不会丢结果。
+    ApplyPendingSettingsResult();
+
+    try {
+        if (!settingsWindow_) {
+            // 【只构造一次】
+            //
+            // 为什么不能每次都 new 一个：
+            //   · WinUI 3 的 Window 在 Close() 之后**不可复用** —— 对着已关闭的
+            //     窗口调 Activate() 会抛 hresult_error，而异常从托盘的
+            //     LRESULT CALLBACK 窗口过程逃出去 = CRT std::terminate =
+            //     0xC0000409 = 进程直接消失。2026-10-20 的崩溃就是这个。
+            //   · 而「每次 new 一个」实测**线性泄漏**原生资源：每轮约 36 个
+            //     句柄 + 1.8 MB 私有内存，无上界（30 轮 = +379 句柄 /
+            //     +30.4 MB，直接撞穿 145 MB 红线）。详细数据见
+            //     SettingsWindow.xaml.cpp 构造函数里的长注释。
+            //
+            // 所以设置窗口改成「构造一次 + 隐藏/显示」：关闭时只 Hide，
+            // 每轮零分配。这里只在第一次真正创建。
+            settingsWindow_ = winrt::make<SettingsWindow>();
+        }
+        // 已经开着的话，这里只把**当前**生效值重新灌进去，
         // 否则显示的是上次打开时的旧状态（用户会以为刚才的修改没保存）。
         settingsWindow_.LoadFrom(aggregate_, sortMode_, settings_.intervalMs,
                                  settings_.autoStart);
+        // 新一轮：准备接收结果（LoadFrom 已把 accepted_ 复位）。
+        settingsResultConsumed_ = false;
+
+        // 隐藏着的窗口要先 Show 再 Activate。
+        // AppWindow::Show(true) = 显示并激活；Activate() 再补一次，
+        // 因为部分 shell 上 Show 的激活不保证真的抢到前台。
+        settingsWindow_.AppWindow().Show(true);
+        settingsWindow_.Activate();
+    } catch (winrt::hresult_error const& e) {
+        LINGSYSMON_TRACE("OnOpenSettings threw hresult=0x%08X msg=%ls",
+                         static_cast<unsigned>(e.code().value), e.message().c_str());
+    } catch (std::exception const& e) {
+        LINGSYSMON_TRACE("OnOpenSettings threw std::exception: %s", e.what());
+    } catch (...) {
+        LINGSYSMON_TRACE("OnOpenSettings threw UNKNOWN non-standard exception");
     }
-    settingsWindow_.Activate();
+}
+
+// 轮询设置窗口的结果并应用。详见 MainWindow.xaml.h 里的说明。
+void MainWindow::ApplyPendingSettingsResult() {
+    if (!settingsWindow_) return;
+    if (settingsResultConsumed_) return;
+    // Accepted() 只有在用户按了「确定」之后才为 true；
+    // 「取消」和「直接关掉」都保持 false —— 那两种情况本来就不该应用任何东西。
+    if (!settingsWindow_.Accepted()) return;
+
+    settingsResultConsumed_ = true;
+    ApplySettingsResult(settingsWindow_);
 }
 
 void MainWindow::ApplySettingsResult(winrt::LingwuSysmon::SettingsWindow const& w) {
@@ -936,7 +1026,17 @@ void MainWindow::ApplySettingsResult(winrt::LingwuSysmon::SettingsWindow const& 
 
     // ---- 应用到运行时 ----
     aggregate_ = settings_.aggregate;
-    AggregateSwitch().IsOn(aggregate_);
+    // 这个函数现在是由 ApplyPendingSettingsResult（100 ms 定时器轮询）调进来的，
+    // 不是 XAML 事件处理器 —— 但异常一样不能放出去：这里是 UI 线程的定时器回调，
+    // 抛出去会一路穿过 DispatcherQueue 的回调边界。
+    // 包一层，保证「聚合档位没切过去」不会变成更难查的问题。
+    try {
+        AggregateSwitch().IsOn(aggregate_);
+    } catch (winrt::hresult_error const& e) {
+        LINGSYSMON_TRACE("ApplySettingsResult: AggregateSwitch::IsOn threw "
+                         "hresult=0x%08X msg=%ls",
+                         static_cast<unsigned>(e.code().value), e.message().c_str());
+    }
     sampler_.SetGroupMode(aggregate_);
 
     // 排序档位变了要同步给采样线程，否则 RebuildRows 用的还是旧档。
@@ -998,7 +1098,19 @@ void MainWindow::ShowAndActivate() {
     if (!::IsWindowVisible(hwnd_)) {
         // Show(true) = 显示并激活。注意不能省掉后面的 SetForegroundWindow：
         // AppWindow.Show 的激活在部分 shell 上不保证真的抢到前台。
-        AppWindow().Show(true);
+        //
+        // 这里用**裸 try/catch** 而不是 GuardCallback：因为需要「失败了就降级
+        // 重试一次」，而 GuardCallback 的语义是「吞掉并记录」。
+        // 调用方（tray.onShowMain / win32.HostProc.activate）那层仍然有
+        // GuardCallback 兜底，两层不冲突。
+        try {
+            AppWindow().Show(true);
+        } catch (winrt::hresult_error const& e) {
+            LINGSYSMON_TRACE("AppWindow::Show failed hresult=0x%08X msg=%ls, "
+                             "falling back to SW_RESTORE",
+                             static_cast<unsigned>(e.code().value), e.message().c_str());
+            ::ShowWindow(hwnd_, SW_RESTORE);
+        }
     } else if (::IsIconic(hwnd_)) {
         ::ShowWindow(hwnd_, SW_RESTORE);
     }
@@ -1130,6 +1242,36 @@ void MainWindow::RequestExit() {
     // 所以不会出现「对话框还没关完、窗口已经被销毁」的半截状态。
     LINGSYSMON_TRACE("MainWindow::RequestExit");
     quitting_ = true;
+
+    // ---- 设置窗口必须先真正关闭 --------------------------------------------
+    //
+    // 设置窗口改成「关闭时只隐藏、不销毁」（因为 WinUI 3 的 Window 关闭后
+    // 不可复用，而每次新建一个会线性泄漏原生资源），所以它会一直活着。
+    // 而只要还有一个 Window 活着，XAML 框架的消息循环就不会结束 ——
+    // 进程会变成「窗口全没了但进程还在」的僵留状态（托盘图标也没了、
+    // 任务管理器里还在）。
+    //
+    // 【为什么不能用 AppWindow::Destroy()】
+    // 实测踩过：Destroy() 只销毁原生 HWND，**框架的窗口计数不会归零**，
+    // 消息循环照样不结束 —— 表现就是进程永远退不掉（trace 里能看到
+    // 「MainWindow closed」已经打过，但进程仍在）。
+    // 只有真正的 Window::Close() 才会把它从框架里注销掉。
+    //
+    // 而 Window::Close() 会触发 AppWindow.Closing —— 那个处理器平时会把
+    // 关闭拦下来改成隐藏，所以要先 AllowClose() 放行，再 Close()。
+    if (settingsWindow_) {
+        try {
+            settingsWindow_.AllowClose();
+            settingsWindow_.Close();
+            LINGSYSMON_TRACE("MainWindow: settings window closed for shutdown");
+        } catch (winrt::hresult_error const& e) {
+            LINGSYSMON_TRACE("settings Close failed hresult=0x%08X msg=%ls",
+                             static_cast<unsigned>(e.code().value), e.message().c_str());
+        } catch (...) {
+            LINGSYSMON_TRACE("settings Close threw UNKNOWN exception");
+        }
+    }
+
     // 关窗口 → Closed 处理器跑（停采样线程、摘子类）→ XAML 框架的消息循环
     // 自然结束 → main.cpp 的 Application::Start 返回 → 撤托盘、释放互斥量。
     //
@@ -1144,7 +1286,14 @@ void MainWindow::SetAggregate(bool on) {
     aggregate_ = on;
     settings_.aggregate = on;
     core::SaveSettings(settings_);
-    AggregateSwitch().IsOn(on);
+    // IsOn 会触发 Toggled 处理器（它会自己再 Refresh 一次），
+    // 是个裸的 XAML 调用 —— 异常从托盘菜单那条链过来时不能让它逃出去。
+    try {
+        AggregateSwitch().IsOn(on);
+    } catch (winrt::hresult_error const& e) {
+        LINGSYSMON_TRACE("AggregateSwitch::IsOn threw hresult=0x%08X msg=%ls",
+                         static_cast<unsigned>(e.code().value), e.message().c_str());
+    }
     sampler_.SetGroupMode(on);
     Refresh();
     LINGSYSMON_TRACE("MainWindow::SetAggregate(%d)", on ? 1 : 0);
