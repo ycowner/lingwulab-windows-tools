@@ -31,19 +31,46 @@
 // 注意：该登记项是 Explorer 收到 NIM_ADD **之后**才建的，所以必须先注册再提升。
 namespace platform {
 
+// 托盘菜单里的模块。
+//
+// 托盘模块是**纯 Win32** 的，不认识「页面」这种 XAML 概念，
+// 所以这里只用一个枚举表示「切到哪个模块」，具体怎么切由外壳决定。
+enum class TrayModule {
+    Monitor = 0,   // 性能监视
+    Service = 1,   // 服务管理
+};
+
 // 托盘菜单命中的动作。用回调而不是让托盘模块直接持有窗口：
 // 托盘是纯 Win32 模块，不该知道 WinRT 投影类型的存在。
+//
+// 【菜单契约（2026-10-23 拍板，与 sysmon 原「五项」不同）】
+//   显示工具箱
+//   ─────────
+//   性能监视        ← 切到 MonitorPage
+//   服务管理        ← 切到 ServicePage
+//   设置…           ← SettingsWindow
+//   ─────────
+//   退出
+//
+// 相对 sysmon 原契约的**下沉**：
+//   · 「按应用聚合」→ 性能监视页命令栏里本来就有 ToggleSwitch，
+//     托盘再放一份就是状态双写（两处可能不一致）。
+//   · 「重新添加托盘图标」→ 移到设置窗口，它是「动作」不是「状态」，
+//     放在设置项列表里更合理。
 struct TrayCallbacks {
-    // 显示 / 激活主窗口（托盘左键、菜单「显示主界面」）
+    // 显示 / 激活主窗口（托盘左键、菜单「显示工具箱」）
     std::function<void()> onShowMain;
+    // 切换到某个模块（菜单「性能监视」/「服务管理」）。
+    // 实现方要负责**把窗口也显示出来** —— 否则窗口藏在托盘里时，
+    // 用户点了「服务管理」却什么也看不到（菜单动作没有可见效果）。
+    std::function<void(TrayModule)> onSelectModule;
+    // 当前是哪个模块。菜单据此给当前模块打勾（MF_CHECKED），
+    // 否则用户看不出窗口现在停在哪一页。
+    std::function<TrayModule()> getActiveModule;
     // 打开设置窗口
     std::function<void()> onSettings;
     // 真正退出（菜单「退出」）
     std::function<void()> onExit;
-    // 切换「按应用聚合」。托盘模块不持有这个状态的副本，
-    // 每次弹菜单前通过这个 getter 问一次当前值，避免两边不一致。
-    std::function<bool()> getAggregate;
-    std::function<void(bool)> setAggregate;
 };
 
 // 创建消息窗口并注册托盘图标。

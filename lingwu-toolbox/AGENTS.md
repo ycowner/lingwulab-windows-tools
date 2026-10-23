@@ -146,6 +146,29 @@ README 踩坑 24）。这一步不是洁癖，是**被实测逼出来的**：
 （**`AppWindow::Destroy()` 不行** —— 它只销毁原生 HWND，框架的窗口计数不归零，
 消息循环不结束，进程会僵留在「窗口没了但还在」的状态）。
 
+### 设置窗口的版式与固定尺寸（2026-10-23 用户拍板）
+
+设置窗口固定成 **590×560 逻辑像素**，物理像素按当前显示器的缩放换算
+（`GetDpiForWindow` → dpi/96）。
+
+**为什么必须固定**：不固定的话窗口按内容自适应，实测会撑到 **1440×755 逻辑像素**
+（物理 2880×1511），几乎占满整块屏，中间一大片空白。
+根因是根 Grid 的第二行是 `"*"` —— 自适应时它把窗口整个撑开了。
+（这条是 2026-10-23 做版式对照时顺手发现的既有缺陷，不是一开始就有的。）
+
+**为什么不用 `AppWindow::RasterizationScale()`**：本版 Windows App SDK（2.5.1）的
+`AppWindow` 上**没有**这个属性（它在 `Microsoft.UI.Content` 的 `ContentRoot` 上）。
+`GetDpiForWindow` 是 Win32 原生接口，1607 起就有，本工程最低版本 10.0.17763 够用。
+
+**新增的两项**（版式在 4 个候选里选了「下拉 + 标题栏右侧按钮」）：
+- 「关闭窗口时」三态：**下拉**（与「默认排序」「采样间隔」同款行式），
+  三项下标就是档位值，与 `core/settings.h` 的 `kCloseAsk` / `kCloseMinimizeToTray` /
+  `kCloseExitProgram` 一一对应，读回来不用做映射。
+  这一项以前**没有 UI 入口**（设为 1 或 2 之后只能手改 ini 改回 0），现在补上了。
+- 「重新添加托盘图标」：标题栏右侧。它是**动作**不是状态，所以放设置里
+  （托盘菜单是高频操作区，不该塞维护类动作）。
+
+
 ### 窗口尺寸不是内存变量（2026-10-14 受控 A/B 实测）
 
 主窗口默认尺寸从 1040×700 放大到工作区的 70%（本机 2015×1192，约 2 倍面积）之后，
@@ -299,17 +322,37 @@ README.md「实现要点与踩坑记录」列了 24 条实测踩坑。这里只�
 
 ## 设置文件契约（向后兼容，不许改）
 
-- 路径 `%APPDATA%\LingwuSysMon\settings.ini`、段头 `[Settings]`、全部键名不变
-- 活跃键：`Aggregate` / `SortMode`(0-4) / `IntervalMs`(250-10000) / `TrayHintShown`
+- 路径 `%APPDATA%\LingwuToolbox\settings.ini`、段头 `[Settings]`、键名如下
+  （2026-10-23 合并成工具箱时改的路径；旧路径 `%APPDATA%\LingwuSysMon\settings.ini`
+  与 `%APPDATA%\LingwuServiceManager\settings.ini` 只**读**用于一次性迁移，保留不删）
+- 活跃键：`Aggregate` / `MonitorSortMode`(0-4) / `MonitorIntervalMs`(250-10000)
+  / `ServiceSortMode`(0-5) / `ServiceFilterMode`(0-4) / `ServiceDetailExpanded`
+  / `TrayHintShown` / `WindowLeft` / `WindowTop` / `WindowWidth` / `WindowHeight`
   / `CloseAction`(0-2；0=每次询问 / 1=总是隐藏到托盘 / 2=总是退出程序)
 - `AutoStart` **不落 ini**，注册表是唯一事实源
 - 采样间隔的整数除数**必须在整数侧钳 ≥1**：`(uint64_t)0.001 == 0`，
   曾致启动 6 秒必崩 `0xC0000094`
 
-## 托盘菜单契约
+## 托盘菜单契约（2026-10-23 拍板，已实跑取证）
 
-五项，顺序固定：显示主界面 / 按应用聚合（带勾选态）/ 分隔 / 设置… / 重新添加托盘图标 /
-分隔 / 退出。托盘模块不持有「按应用聚合」状态的副本，每次弹菜单前通过 getter 问一次。
+五项，顺序固定：
+
+```
+显示工具箱
+─────────
+✓ 性能监视          ← 切到 MonitorPage
+  服务管理          ← 切到 ServicePage
+  设置…             ← SettingsWindow
+─────────
+  退出
+```
+
+- 「性能监视 / 服务管理」**带勾选态**，标记当前所在页。勾选态由
+  `TrayCallbacks::getActiveModule()` 现场问一次，托盘模块**不持有**这份状态的副本。
+- 从托盘选模块时**顺带把窗口显示出来**（否则窗口藏在托盘里时菜单动作没有可见效果）。
+- 原 sysmon 菜单里的「按应用聚合」**下沉**到性能页命令栏的 ToggleSwitch
+  （避免状态双写）；「重新添加托盘图标」**下沉**到设置窗口标题栏右侧
+  （它是动作不是状态，托盘菜单是高频操作区，不该塞维护类动作）。
 
 ## 验证要求
 
@@ -343,9 +386,12 @@ UIA 断言 + 读可观测状态（`IsIconic` / `ToggleState` / ini / 注册表 /
 `Shell_Tray.NormalButton` 实测支持 `InvokePattern`，且不依赖光标位置。
 已通过的三条：最小化后 Invoke → 主窗口恢复（`IsIconic` 由 True 变 False）；
 Invoke 不会误退出进程；托盘按钮始终在。
-**右键菜单文本仍未经 live 验证** —— 弹出它必须真实点击，本机做不到；
-菜单内容靠直读 `src/platform/tray_icon.cpp` 的 `ShowTrayMenu()` 核对
-（五项契约见上一节）。这一条是已知的验证缺口，不要当成已验证。
+**右键菜单文本已于 2026-10-23 live 验证**（此前是已知缺口）。
+办法：给托盘模块临时加一个「把菜单弹到固定坐标」的消息钩子（本次已随对照
+脚手架一并删除），再用 DPI 感知的屏幕截图把菜单那一块裁出来。
+实测菜单文本与契约逐字一致，勾选标记随当前模块切换而移动。
+这个办法以后还会用到，值得再写一次（截图必须先设
+`SetProcessDpiAwarenessContext(PerMonitorV2)`，否则坐标错位）。
 
 **设置窗口类改动必须跑 `tools\uisettings2.ps1`**（2026-10-21 新增）。
 它覆盖「开 → 关 → **再开**」这条路径 —— 而「第二次打开」正是 2026-10-20
@@ -354,8 +400,7 @@ Invoke 不会误退出进程；托盘按钮始终在。
 发现的原因。
 等价路径论证：托盘菜单「设置…」与主窗口的「设置」按钮调用的是**同一个**
 `MainWindow::OnOpenSettings()`（前者经 `g_cb.onSettings`，后者经
-`SettingsButton().Click`），所以用主窗口按钮做自动回归即等价覆盖托盘路径的根因；
-托盘右键菜单本身的 live 验证仍是上面那条已知缺口，需要人工确认。
+`SettingsButton().Click`），所以用主窗口按钮做自动回归即等价覆盖托盘路径的根因。
 该脚本同时量「反复开关」的私有内存增量 —— 设置窗口改成「构造一次 + 隐藏/显示」
 就是为了让这个增量不随轮数线性增长（详见 README 踩坑 24）。
 

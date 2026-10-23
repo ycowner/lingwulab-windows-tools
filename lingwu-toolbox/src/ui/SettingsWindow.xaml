@@ -22,24 +22,42 @@
         TypedEventHandler）是好的。
       所以 ComboBox 的当前值不在选择时读，而在「确定」被按下时一次性读回来
       —— 少两条事件通路，反而更不容易出错。
+
+      【版式（2026-10-23 用户拍板，候选 C）】
+        · 「关闭窗口时」用**下拉**，与上面的「默认排序」「采样间隔」同款行式，
+          整个设置窗口只有一种行式样；
+        · 「重新添加托盘图标」放在**标题栏右侧**。
+      曾经还并行实现过「三行单选」与「药丸分段」两套版式做对照，
+      拍板后已连同切换开关一起删除。
     -->
     <Grid x:Name="RootGrid" RowDefinitions="Auto,*,Auto"
           Background="Transparent">
 
         <!-- ============================ 标题栏（可拖拽） ============================ -->
         <Grid x:Name="TitleBar" Grid.Row="0" Height="48" Background="Transparent">
-            <StackPanel x:Name="DragRegion"
-                        Orientation="Horizontal"
-                        VerticalAlignment="Center"
-                        Spacing="10"
-                        Margin="16,0,0,0"
-                        Background="Transparent">
-                <FontIcon Glyph="&#xE713;" FontSize="14" VerticalAlignment="Center"
-                          Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
-                <TextBlock Text="设置"
-                           VerticalAlignment="Center"
-                           Style="{ThemeResource BodyStrongTextBlockStyle}" />
-            </StackPanel>
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <StackPanel x:Name="DragRegion"
+                            Grid.Column="0"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center"
+                            Spacing="10"
+                            Margin="16,0,0,0"
+                            Background="Transparent">
+                    <FontIcon Glyph="&#xE713;" FontSize="14" VerticalAlignment="Center"
+                              Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                    <TextBlock Text="设置"
+                               VerticalAlignment="Center"
+                               Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                </StackPanel>
+
+                <!-- 「重新添加托盘图标」放在标题栏右侧。
+                     它在 DragRegion 之外，所以不会被拖拽区吃掉点击。 -->
+                <Button x:Name="TrayRecreateButton" Grid.Column="2"
+                        Content="重新添加托盘图标"
+                        Style="{ThemeResource AccentButtonStyle}"
+                        Margin="0,0,16,0"
+                        VerticalAlignment="Center" />
+            </Grid>
         </Grid>
 
         <!-- ============================ 设置项 ============================ -->
@@ -126,6 +144,30 @@
                        TextWrapping="Wrap"
                        Margin="0,10,0,0"
                        Style="{ThemeResource CaptionTextBlockStyle}" />
+
+            <!-- 5. 关闭窗口时的行为
+                 三档与 core/settings.h 的 kCloseAsk / kCloseMinimizeToTray /
+                 kCloseExitProgram 一一对应，下标就是档位值，所以这里读回来
+                 不用再做映射。
+                 这一项以前**没有 UI 入口**（设为 1 或 2 之后只能手改 ini 改回 0），
+                 现在补上了。 -->
+            <Grid Margin="0,12,0,0" ColumnDefinitions="*,180">
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="关闭窗口时" Style="{ThemeResource BodyTextBlockStyle}" />
+                    <TextBlock Text="点标题栏的 X 或按 Alt+F4 时的默认行为"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.65"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+                <ComboBox x:Name="CloseActionCombo" Grid.Column="1"
+                          HorizontalAlignment="Right"
+                          VerticalAlignment="Center"
+                          MinWidth="180">
+                    <ComboBoxItem Content="每次询问" />
+                    <ComboBoxItem Content="总是隐藏到托盘" />
+                    <ComboBoxItem Content="总是退出程序" />
+                </ComboBox>
+            </Grid>
 
             <!-- 口径说明。内存数字的口径必须在界面上说清楚，
                  否则用户拿任务管理器对数会以为算错了。 -->

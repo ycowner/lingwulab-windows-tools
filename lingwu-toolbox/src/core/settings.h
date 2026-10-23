@@ -18,6 +18,18 @@
 namespace lingwu {
 namespace core {
 
+// 点标题栏 X（或 Alt+F4）时的行为。与 settings.ini 的 CloseAction 键一一对应。
+//
+// 【为什么定义在设置层，而不是各 UI 文件各写一份】
+// 这个三态同时被三处使用：设置窗口的 UI 入口（写）、外壳的关闭拦截（读）、
+// ini 的读写（存）。以前 MainWindow.xaml.h 里有 private 的一份、设置窗口
+// 只能照抄字面量 0/1/2 —— 改一处漏一处的后果很隐蔽：用户选了「总是退出」，
+// 设置窗口显示的却是「总是隐藏到托盘」，而行为确实是退出。
+// 设置层是唯一事实源，别的地方引用这里的常量。
+constexpr int kCloseAsk            = 0;   // 每次询问（默认）
+constexpr int kCloseMinimizeToTray = 1;   // 总是隐藏到托盘
+constexpr int kCloseExitProgram    = 2;   // 总是退出程序
+
 struct Settings {
     // ---- 性能监视模块 ----
     bool aggregate   = true;   // 按应用聚合（false = 逐进程）
@@ -43,10 +55,10 @@ struct Settings {
     bool trayHintShown = false;  // 托盘图标在 ^ 隐藏区的一次性提示已弹过
 
     // 点标题栏 X 时的行为：0 = 每次询问（默认）、1 = 总是隐藏到托盘、2 = 总是退出程序。
-    // 取值与 MainWindow 里的 kCloseAsk / kCloseMinimizeToTray / kCloseExitProgram 一一对应。
+    // 取值常量见本文件上方的 kCloseAsk / kCloseMinimizeToTray / kCloseExitProgram。
     //
-    // 已知缺口：设为 1 或 2 之后**没有 UI 入口能改回 0**，
-    // 只能手改这个文件把 CloseAction 置 0。
+    // 以前这里没有任何 UI 入口能改这个值（设为 1 或 2 之后只能手改 ini 改回 0），
+    // Phase 3 起由设置窗口的「关闭窗口时」三态控件写入。
     int  closeAction   = 0;
 };
 

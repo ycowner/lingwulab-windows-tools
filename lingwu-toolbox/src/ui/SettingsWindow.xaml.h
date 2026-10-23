@@ -23,7 +23,8 @@ struct SettingsWindow : SettingsWindowT<SettingsWindow> {
     // 主窗口在 Activate() 之前调用，把当前生效的值灌进来，
     // 这样设置窗口一打开就是真实状态，而不是结构体默认值。
     // 调用时机在构造函数之后，InitializeComponent 已跑完，控件都真实存在。
-    void LoadFrom(bool aggregate, int sortMode, int intervalMs, bool autoStart);
+    void LoadFrom(bool aggregate, int sortMode, int intervalMs, bool autoStart,
+                  int closeAction);
 
     // 用户是否按了「确定」。只有 true 时主窗口才需要回读并应用。
     bool Accepted() const { return accepted_; }
@@ -44,6 +45,9 @@ struct SettingsWindow : SettingsWindowT<SettingsWindow> {
     int      ResultSortMode()  const { return resSortMode_; }
     int      ResultIntervalMs() const { return resIntervalMs_; }
     bool     ResultAutoStart() const { return resAutoStart_; }
+    // 「关闭窗口时」的档位。取值见 core/settings.h 的
+    // kCloseAsk / kCloseMinimizeToTray / kCloseExitProgram。
+    int      ResultCloseAction() const { return resCloseAction_; }
 
 private:
     void ApplyBackdrop();
@@ -51,6 +55,31 @@ private:
     void OnOk();
     void OnCancel();
     void ApplyAutoStart(bool wantOn);
+
+    // 标题栏右侧的「重新添加托盘图标」按钮要**让出系统按钮的位置**。
+    //
+    // ExtendsContentIntoTitleBar(true) 之后，最小化/最大化/关闭三个系统按钮
+    // 是画在内容**之上**的。不主动让位，那个按钮就会被压住一半
+    // （2026-10-23 实测截图：按钮右半截被最大化与关闭盖住，既难看也难点）。
+    // AppWindow().TitleBar().RightInset() 就是系统按钮占掉的宽度（物理像素），
+    // 换算成逻辑像素后当按钮的右边距。
+    void ApplyTitleBarRightInset();
+
+    // 当前窗口所在显示器的缩放（dpi / 96.0）。拿不到时按 1.0 兜底。
+    double WindowScale() const;
+
+    // 固定窗口尺寸。
+    //
+    // 【为什么要固定】
+    // 不固定的话窗口按内容自适应，实测会撑到 1440×755 逻辑像素
+    // （物理 2880×1511），几乎占满整块屏，中间一大片空白 ——
+    // 根因是根 Grid 的第二行是 "*"，自适应时它把窗口整个撑开了。
+    // 固定成 590×560 逻辑像素正好装下全部内容。
+    //
+    // 物理像素按**当前窗口所在显示器**的缩放换算，所以高分屏上也是同样的
+    // 逻辑大小，不会挤成一团（用 GetDpiForWindow，不用 AppWindow：
+    // 本版 Windows App SDK 的 AppWindow 上没有 RasterizationScale）。
+    void ApplyFixedSize();
 
     // 隐藏自己（而不是 Close）。
     //
@@ -81,9 +110,16 @@ private:
     int  resIntervalMs_ = 1000;
     bool resAutoStart_  = false;
 
+    // 「关闭窗口时」的当前档位。0 询问 / 1 隐藏到托盘 / 2 退出程序。
+    // 取值常量见 core/settings.h。
+    int  resCloseAction_ = lingwu::core::kCloseAsk;
+
     // 「确定」时自启注册表写入失败的原因。UI 上把它显示出来并**阻止关闭**，
     // 否则用户会以为开关生效了，下次重启发现没自启更难排查。
     std::wstring autoStartError_;
+
+    // 本窗口的原生句柄。构造时取一次，后面算 DPI、读 RightInset 都用它。
+    HWND hwnd_{ nullptr };
 };
 
 }  // namespace winrt::LingwuToolbox::implementation

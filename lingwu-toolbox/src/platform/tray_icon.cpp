@@ -130,11 +130,11 @@ void TryPromoteTrayIcon() {
 }
 
 // ---------------------------------------------------------------- 菜单
-constexpr UINT IDM_TRAY_MAIN      = 0x1001;
-constexpr UINT IDM_TRAY_SETTINGS  = 0x1002;
-constexpr UINT IDM_TRAY_RECREATE  = 0x1003;
-constexpr UINT IDM_TRAY_AGGREGATE = 0x1004;
-constexpr UINT IDM_TRAY_EXIT      = 0x1005;
+constexpr UINT IDM_TRAY_MAIN     = 0x1001;
+constexpr UINT IDM_TRAY_SETTINGS = 0x1002;
+constexpr UINT IDM_TRAY_EXIT     = 0x1003;
+constexpr UINT IDM_TRAY_MONITOR  = 0x1010;
+constexpr UINT IDM_TRAY_SERVICE  = 0x1011;
 
 void ShowTrayMenu(HWND owner) {
     HMENU m = CreatePopupMenu();
@@ -150,13 +150,19 @@ void ShowTrayMenu(HWND owner) {
     };
     MenuGuard menuGuard{ m };
 
-    const bool agg = g_cb.getAggregate ? g_cb.getAggregate() : false;
+    // 当前模块 —— 用来给「性能监视 / 服务管理」打勾。
+    // 托盘模块不持有这个状态的副本，每次弹菜单前问一次，避免两边不一致。
+    const TrayModule active =
+        g_cb.getActiveModule ? g_cb.getActiveModule() : TrayModule::Monitor;
 
-    AppendMenuW(m, MF_STRING, IDM_TRAY_MAIN, L"显示主界面");
-    AppendMenuW(m, MF_STRING | (agg ? MF_CHECKED : 0), IDM_TRAY_AGGREGATE, L"按应用聚合");
+    // 菜单契约见 tray_icon.h 的 TrayCallbacks 注释。
+    AppendMenuW(m, MF_STRING, IDM_TRAY_MAIN, L"显示工具箱");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(m, MF_STRING | (active == TrayModule::Monitor ? MF_CHECKED : 0),
+                IDM_TRAY_MONITOR, L"性能监视");
+    AppendMenuW(m, MF_STRING | (active == TrayModule::Service ? MF_CHECKED : 0),
+                IDM_TRAY_SERVICE, L"服务管理");
     AppendMenuW(m, MF_STRING, IDM_TRAY_SETTINGS, L"设置…");
-    AppendMenuW(m, MF_STRING, IDM_TRAY_RECREATE, L"重新添加托盘图标");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_TRAY_EXIT, L"退出");
 
@@ -190,19 +196,19 @@ void ShowTrayMenu(HWND owner) {
                 if (g_cb.onShowMain) g_cb.onShowMain();
             });
             break;
+        case IDM_TRAY_MONITOR:
+            platform::GuardCallback("tray.onSelectModule.monitor", [&]{
+                if (g_cb.onSelectModule) g_cb.onSelectModule(TrayModule::Monitor);
+            });
+            break;
+        case IDM_TRAY_SERVICE:
+            platform::GuardCallback("tray.onSelectModule.service", [&]{
+                if (g_cb.onSelectModule) g_cb.onSelectModule(TrayModule::Service);
+            });
+            break;
         case IDM_TRAY_SETTINGS:
             platform::GuardCallback("tray.onSettings", [&]{
                 if (g_cb.onSettings) g_cb.onSettings();
-            });
-            break;
-        case IDM_TRAY_RECREATE:
-            platform::GuardCallback("tray.onRecreate", [&]{
-                RecreateTrayIcon();
-            });
-            break;
-        case IDM_TRAY_AGGREGATE:
-            platform::GuardCallback("tray.onAggregate", [&]{
-                if (g_cb.setAggregate) g_cb.setAggregate(!agg);
             });
             break;
         case IDM_TRAY_EXIT:

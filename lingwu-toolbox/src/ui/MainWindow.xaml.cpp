@@ -443,10 +443,20 @@ void MainWindow::InitTray() {
     // 全部捕获 this：这些 lambda 只可能在本窗口活着的时候被调
     // （托盘消息窗口与本窗口同线程，本窗口 Closed 时托盘已撤）。
     cb.onShowMain = [this]() { ShowAndActivate(); };
+    // 模块切换：**顺带把窗口显示出来**。
+    // 窗口藏在托盘里时，用户从托盘菜单点「服务管理」，
+    // 如果不显示窗口就等于什么也没发生（菜单动作没有可见效果）。
+    cb.onSelectModule = [this](platform::TrayModule m) {
+        ShowModule((m == platform::TrayModule::Service) ? Module::Service
+                                                         : Module::Monitor);
+        ShowAndActivate();
+    };
+    cb.getActiveModule = [this]() {
+        return (currentModule_ == Module::Service) ? platform::TrayModule::Service
+                                                   : platform::TrayModule::Monitor;
+    };
     cb.onSettings = [this]() { monitorPage_.OpenSettings(); };
     cb.onExit     = [this]() { RequestExit(); };
-    cb.getAggregate = [this]() { return AggregateOn(); };
-    cb.setAggregate = [this](bool on) { SetAggregate(on); };
 
     if (!platform::InitTrayIcon(cb)) {
         // 典型成因：开机自启抢在 Explorer 前面启动，NIM_ADD 失败。
@@ -457,14 +467,6 @@ void MainWindow::InitTray() {
     // 把主窗口 HWND 写进共享内存，供第二份启动时定位本份窗口。
     // 必须在 Activate 之前：第二份可能在 Activate 之前就发消息过来。
     platform::PublishMainHwnd(hwnd_);
-}
-
-bool MainWindow::AggregateOn() const {
-    return monitorPage_.AggregateOn();
-}
-
-void MainWindow::SetAggregate(bool on) {
-    monitorPage_.SetAggregate(on);
 }
 
 void MainWindow::ShowAndActivate() {

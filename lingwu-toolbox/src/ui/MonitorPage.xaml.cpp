@@ -725,7 +725,7 @@ void MonitorPage::OnOpenSettings() {
         // 已经开着的话，这里只把**当前**生效值重新灌进去，
         // 否则显示的是上次打开时的旧状态（用户会以为刚才的修改没保存）。
         settingsWindow_.LoadFrom(aggregate_, sortMode_, settings_->intervalMs,
-                                 settings_->autoStart);
+                                 settings_->autoStart, settings_->closeAction);
         // 新一轮：准备接收结果（LoadFrom 已把 accepted_ 复位）。
         settingsResultConsumed_ = false;
 
@@ -766,6 +766,9 @@ void MonitorPage::ApplySettingsResult(winrt::LingwuToolbox::SettingsWindow const
     settings_->sortMode   = w.ResultSortMode();
     settings_->intervalMs = w.ResultIntervalMs();
     settings_->autoStart  = w.ResultAutoStart();
+    // 「关闭窗口时」的档位。这是**整个程序**的关闭行为（不是本页的），
+    // 但设置窗口住在本页，所以值从本页取、再经共享的 settings_ 写回。
+    settings_->closeAction = w.ResultCloseAction();
     // autoStart 的注册表写入已在设置窗口里做完并回读校验，这里只同步到 settings_。
     // ini 不落 AutoStart —— 注册表才是唯一事实源（见 settings.cpp 的注释）。
 

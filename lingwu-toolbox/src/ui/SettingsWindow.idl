@@ -42,7 +42,8 @@ namespace LingwuToolbox
         void LoadFrom(Boolean aggregate,
                       Int32 sortMode,
                       Int32 intervalMs,
-                      Boolean autoStart);
+                      Boolean autoStart,
+                      Int32 closeAction);
 
         // What the user ended up choosing. Only meaningful after the window
         // closes with OK; the main window reads it from its Closed handler.
@@ -61,6 +62,8 @@ namespace LingwuToolbox
         Int32   ResultSortMode   { get; };
         Int32   ResultIntervalMs { get; };
         Boolean ResultAutoStart  { get; };
+        // 0 = ask every time, 1 = always hide to tray, 2 = always exit.
+        Int32   ResultCloseAction { get; };
 
         // Let the window really close from now on.
         //

@@ -28,11 +28,15 @@
 // 紧接着 case 标签退化成 C2051/C4065，看起来像语法写错了。
 #include "core/monitor/autostart.h"
 #include "core/monitor/metrics.h"
+#include "platform/tray_icon.h"
 #include "platform/trace.h"
+
+#include <cmath>
+#include <cstdlib>
 
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
-using namespace Microsoft::UI::Xaml::Media;
+using namespace Microsoft::UI::Windowing;
 
 namespace winrt::LingwuToolbox::implementation {
 // 与 MainWindow.xaml.cpp 一致：core 指 core 数据层，不是任何 WinRT 命名空间。
@@ -43,6 +47,20 @@ namespace {
 // 采样间隔的四个候选档。与 settings.cpp 的合法性收敛区间（250..10000 ms）对齐。
 constexpr int kIntervalChoices[] = { 500, 1000, 2000, 5000 };
 
+// 设置窗口的固定尺寸（**逻辑**像素）。
+//
+// 590×560 这个数值是按内容反推的：
+//   · 宽 590：左边说明列（最长「启动时以及点名称列回退到的排序方式」
+//     约 252 逻辑）+ 右边下拉 180 + 左右外边距 48 = 480，还有余量，
+//     说明文字不会换行；
+//   · 高 560：五个设置项 + 口径说明 + 标题栏 48 + 按钮栏 60 正好装下。
+//
+// 【为什么要固定，而不是让窗口按内容自适应】
+// 实测自适应会撑到 1440×755 逻辑像素（物理 2880×1511），几乎占满整块屏，
+// 中间一大片空白 —— 根因是根 Grid 的第二行是 "*"，自适应时它把窗口整个撑开。
+constexpr int kSettingsWidthLogical  = 590;
+constexpr int kSettingsHeightLogical = 560;
+
 }  // namespace
 
 SettingsWindow::SettingsWindow() {
@@ -52,12 +70,18 @@ SettingsWindow::SettingsWindow() {
     //  下一个人再把它改回去。）
     InitializeComponent();
 
+    // 先取 HWND：后面算 DPI（固定窗口尺寸、让出系统按钮位置）都要用。
+    check_hresult(this->m_inner.as<::IWindowNative>()->get_WindowHandle(&hwnd_));
+
     ApplyBackdrop();
 
     // 必须在这里就挂好事件。放在这里而不是等 LoadFrom/Activate，是因为
     // WireEvents 里要碰 DragRegion()/OkButton() 等控件 —— 它们只在上面的
     // InitializeComponent 之后才真实存在。
     WireEvents();
+
+    // 固定窗口尺寸。见 kSettingsWidthLogical 那段说明。
+    ApplyFixedSize();
 
     // 【关闭时只隐藏，不销毁】
     //
@@ -147,7 +171,8 @@ int SettingsWindow::IndexFromIntervalMs(int ms) {
 }
 
 // ---------------------------------------------------------------- 装配
-void SettingsWindow::LoadFrom(bool aggregate, int sortMode, int intervalMs, bool autoStart) {
+void SettingsWindow::LoadFrom(bool aggregate, int sortMode, int intervalMs, bool autoStart,
+                               int closeAction) {
     // 主窗口在 make<SettingsWindow>() 之后、Activate() 之前调用。
     // 此时构造函数已经跑完 InitializeComponent + WireEvents，控件全都真实存在，
     // 所以这里既写成员（供「确定」时兜底）也直接灌控件（保证用户看到的就是现状）。
@@ -162,18 +187,34 @@ void SettingsWindow::LoadFrom(bool aggregate, int sortMode, int intervalMs, bool
     resSortMode_   = sortMode;
     resIntervalMs_ = intervalMs;
     resAutoStart_  = autoStart;
+    // 越界值收敛回 0（与 settings.cpp 的 ReadCloseAction 钳位一致）。
+    resCloseAction_ = (closeAction >= lingwu::core::kCloseAsk &&
+                       closeAction <= lingwu::core::kCloseExitProgram)
+                          ? closeAction
+                          : lingwu::core::kCloseAsk;
 
     AggregateSwitch().IsOn(aggregate);
     AutoStartSwitch().IsOn(autoStart);
     SortCombo().SelectedIndex(IndexFromSortMode(sortMode));
     IntervalCombo().SelectedIndex(IndexFromIntervalMs(intervalMs));
     AutoStartError().Visibility(Visibility::Collapsed);
+
+    // ---- 「关闭窗口时」的三态 --------------------------------------------
+    //
+    // 下拉的三项下标就是档位值（0/1/2），与 core/settings.h 的
+    // kCloseAsk / kCloseMinimizeToTray / kCloseExitProgram 一一对应，
+    // 所以读回来不用再做映射。
+    CloseActionCombo().SelectedIndex(static_cast<int>(resCloseAction_));
 }
 
 void SettingsWindow::WireEvents() {
     // 自绘标题栏：内容延伸进标题栏区域，DragRegion 设为可拖拽区。
     ExtendsContentIntoTitleBar(true);
     SetTitleBar(DragRegion());
+    // 标题栏右侧那个按钮要让开系统的最小化/最大化/关闭。
+    // 必须在 ExtendsContentIntoTitleBar(true) 之后 —— RightInset 是框架
+    // 在「内容延伸进标题栏」成立之后才给的。
+    ApplyTitleBarRightInset();
 
     // 这里只挂 Click。ComboBox 的 SelectionChanged 是
     // Microsoft.UI.Xaml.Controls.SelectionChangedEventHandler，本版 cppwinrt
@@ -181,6 +222,16 @@ void SettingsWindow::WireEvents() {
     // 顶部长注释）。所以两个 ComboBox 的值都在「确定」被按下时一次性读回。
     OkButton().Click([this](auto&&, auto&&) { OnOk(); });
     CancelButton().Click([this](auto&&, auto&&) { OnCancel(); });
+
+    // 「重新添加托盘图标」按钮。
+    //
+    // 它是一个**动作**而不是一个状态，所以放在设置项里（标题栏右侧），
+    // 而不是托盘菜单里 —— 托盘菜单是高频操作区，不该塞维护类动作。
+    // RecreateTrayIcon 内部是 NIM_DELETE + NIM_ADD，不需要提权。
+    TrayRecreateButton().Click([this](auto&&, auto&&) {
+        platform::RecreateTrayIcon();
+        LINGWU_TRACE("SettingsWindow: tray icon recreated by user");
+    });
 
     // 灌入成员里的当前值。LoadFrom() 会在之后覆盖成真实设置，
     // 这里保证「万一没人调 LoadFrom」时控件也不是未定义状态。
@@ -195,7 +246,6 @@ void SettingsWindow::WireEvents() {
     // 圆角 + 系统背板。Win10 上门控不过会静默跳过，不视为错误。
     platform::ApplyWindowDecorations(hwnd);
 }
-
 // ---------------------------------------------------------------- 自启动
 void SettingsWindow::ApplyAutoStart(bool wantOn) {
     autoStartError_.clear();
@@ -229,6 +279,21 @@ void SettingsWindow::OnOk() {
     resIntervalMs_ = IntervalMsFromIndex(IntervalCombo().SelectedIndex());
     accepted_      = true;
 
+    // ---- 「关闭窗口时」的取值 --------------------------------------------
+    //
+    // 下拉的当前值只能在「确定」时读（SelectionChanged 这类委托接不上，
+    // 见文件头注释），所以这里一次读回来。
+    //
+    // 越界值一律收敛回 kCloseAsk：ini 里被手改成 4 的情况，
+    // 加载时已经收敛过一次，这里再兜一次底。
+    {
+        const int idx = CloseActionCombo().SelectedIndex();
+        resCloseAction_ = (idx >= lingwu::core::kCloseAsk &&
+                            idx <= lingwu::core::kCloseExitProgram)
+                               ? idx
+                               : lingwu::core::kCloseAsk;
+    }
+
     // 设置由主窗口统一落 ini（它持有 settings_ 并负责 SaveSettings），
     // 这里只把结果通过 Accepted() / Result*() 交回去。
     //
@@ -250,6 +315,63 @@ void SettingsWindow::HideSelf() {
         AppWindow().Hide();
     } catch (winrt::hresult_error const& e) {
         LINGWU_TRACE("SettingsWindow: AppWindow::Hide failed hresult=0x%08X msg=%ls",
+                         static_cast<unsigned>(e.code().value), e.message().c_str());
+    }
+}
+
+double SettingsWindow::WindowScale() const {
+    if (!hwnd_) return 1.0;
+    const UINT dpi = ::GetDpiForWindow(hwnd_);
+    return (dpi > 0) ? (static_cast<double>(dpi) / 96.0) : 1.0;
+}
+
+void SettingsWindow::ApplyTitleBarRightInset() {
+    // 系统按钮（最小化/最大化/关闭）在标题栏右侧占掉一块宽度。
+    // 我们的「重新添加托盘图标」按钮必须让开，否则会被压住。
+    try {
+        const int insetPhysical = AppWindow().TitleBar().RightInset();
+        if (insetPhysical <= 0) return;   // 没扩展标题栏，或系统没给这个值
+        const int insetLogical =
+            static_cast<int>(std::lround(insetPhysical / WindowScale()));
+        Thickness t = TrayRecreateButton().Margin();
+        t.Right = insetLogical;
+        TrayRecreateButton().Margin(t);
+        LINGWU_TRACE("SettingsWindow: title bar right inset = %d physical (%d logical)",
+                         insetPhysical, insetLogical);
+    } catch (winrt::hresult_error const& e) {
+        LINGWU_TRACE("ApplyTitleBarRightInset failed hresult=0x%08X msg=%ls",
+                         static_cast<unsigned>(e.code().value), e.message().c_str());
+    }
+}
+
+// ---------------------------------------------------------------- 窗口尺寸
+void SettingsWindow::ApplyFixedSize() {
+    // 逻辑尺寸 → 物理像素的换算按**当前窗口所在显示器**的缩放走。
+    //
+    // 【为什么用 GetDpiForWindow 而不是 AppWindow::RasterizationScale()】
+    // 本版 Windows App SDK（2.5.1）的 AppWindow 上**没有** RasterizationScale
+    // （那个属性在 Microsoft.UI.Content 的 ContentRoot 上，不在 AppWindow 上）。
+    // GetDpiForWindow 是 Win32 原生接口，Windows 10 1607 起就有，
+    // 而本工程的最低版本是 10.0.17763，够用。
+    if (!hwnd_) {
+        LINGWU_TRACE("SettingsWindow: ApplyFixedSize has no HWND");
+        return;
+    }
+    const double scale = WindowScale();
+    const int w = static_cast<int>(std::lround(kSettingsWidthLogical  * scale));
+    const int h = static_cast<int>(std::lround(kSettingsHeightLogical * scale));
+
+    try {
+        AppWindow().Resize(winrt::Windows::Graphics::SizeInt32{ w, h });
+        // 最小尺寸也钉成同样大小：内容正好装下，缩去就会切字。
+        if (auto pres = AppWindow().Presenter().try_as<OverlappedPresenter>()) {
+            pres.PreferredMinimumWidth(kSettingsWidthLogical);
+            pres.PreferredMinimumHeight(kSettingsHeightLogical);
+        }
+        LINGWU_TRACE("SettingsWindow: resized to %dx%d physical (scale=%.2f)",
+                         w, h, scale);
+    } catch (winrt::hresult_error const& e) {
+        LINGWU_TRACE("SettingsWindow: ApplyFixedSize failed hresult=0x%08X msg=%ls",
                          static_cast<unsigned>(e.code().value), e.message().c_str());
     }
 }

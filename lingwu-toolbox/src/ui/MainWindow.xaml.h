@@ -96,11 +96,18 @@ private:
     void ApplyCloseChoice(int action);
 
     // 关闭动作取值，与 settings.ini 的 CloseAction 键一一对应。
-    // **必须与 MainWindow.xaml.cpp 里 ReadCloseAction 的钳位范围一致**：
+    //
+    // 【定义在 core/settings.h，这里只是别名】
+    // 这三态被三处使用：设置窗口的 UI 入口（写）、这里的关闭拦截（读）、
+    // ini 读写（存）。以前定义只在本头里（private），设置窗口只能照抄字面量
+    // 0/1/2 —— 改一处漏一处的后果很隐蔽：用户选了「总是退出」，设置窗口却显示
+    // 「总是隐藏到托盘」，而实际行为是退出。设置层是唯一事实源。
+    //
+    // **必须与 settings.cpp 里 ReadCloseAction 的钳位范围一致**：
     // 手改 ini 写出越界值时，LoadSettings 已经把它收敛回 0。
-    static constexpr int kCloseAsk            = 0;   // 每次询问（默认）
-    static constexpr int kCloseMinimizeToTray = 1;   // 总是隐藏到托盘
-    static constexpr int kCloseExitProgram    = 2;   // 总是退出程序
+    static constexpr int kCloseAsk            = lingwu::core::kCloseAsk;
+    static constexpr int kCloseMinimizeToTray = lingwu::core::kCloseMinimizeToTray;
+    static constexpr int kCloseExitProgram    = lingwu::core::kCloseExitProgram;
 
     // ---- 托盘 / 单实例 --------------------------------------------------
     // 全部由托盘模块的回调或窗口子类调用，所以都是 private。
@@ -112,10 +119,13 @@ private:
     // 加进 MainWindow.idl，代价是一次 MIDL 重跑加暴露公开 WinRT API。
     // 让本类自己挂回调，两个问题一起消失。
 
-    // 「按应用聚合」的当前值 / 设置它。托盘菜单的勾选态与切换走这两个，
-    // 不另存一份状态，避免两边不一致。实际状态住在性能监视页里。
-    bool AggregateOn() const;
-    void SetAggregate(bool on);
+    // 「按应用聚合」的当前值 / 设置它。
+    //
+    // 【2026-10-23 起这里不再有转发】
+    // 这两个转发原本只服务于托盘菜单里的「按应用聚合」勾选项。
+    // 新契约把那一项下沉到性能监视页的 ToggleSwitch（避免状态双写），
+    // 于是外壳这两个转发成了死代码，删掉。
+    // 聚合开关的实际状态住在性能监视页里（monitorPage_.AggregateOn()）。
 
     // true 表示「这一次关闭是真的要退出」，由 RequestExit() 置位。
     // 调用方有两个：托盘菜单的「退出」、以及关闭确认框的「退出程序」。
