@@ -164,6 +164,11 @@ build.bat
 
 产物在 `dist\Release\LingwuToolbox.exe`。脚本通过 `vswhere` 定位 MSVC BuildTools，缺依赖时不要自己拼 `cl` 命令行。
 
+**每次构建前会先清空 `dist\Release\`**（全量重建实测 17~42 秒）。原因见踩坑 32：MSBuild 的增量构建
+只覆盖不删除，已删源文件留下的 `.xbf` 会留在输出目录里，而打包脚本是把整个 `dist\Release\`
+塞进单文件 exe 的 —— 不清理就会把合并前的残留一起发出去。要临时保留产物做快速迭代，
+设 `LINGWU_NO_CLEAN=1` 跳过清理。
+
 `dist\Release\` 是**自包含**产物：exe + `.pri` / `.winmd` + Windows App Runtime 的框架 DLL
 与语言资源（约 250 个文件 / 60 MB）。XAML 资源走 `.pri` 索引，`.xbf` 只是编译中间物，
 不参与运行期加载。
@@ -814,6 +819,28 @@ named 'GetCurrentPattern'」，而 `$ErrorActionPreference = 'Stop'` 会让脚�
 **恒为 false**，于是「托盘图标已撤销」这类断言永远失败，而且是**静默地**失败。
 
 **改动共享 API 的返回类型时，把所有调用点 grep 一遍再跑。**
+
+### 32. 构建不清理输出目录，会把已删除源文件的产物打进发布包
+
+MSBuild 的增量构建**只覆盖、不删除**：源文件删掉或改名之后，它对应的 `.xbf` / `.obj`
+仍然留在 `dist\Release\` 里。而 `packaging\make-sfx.ps1` 是把整个 `dist\Release\` 原样
+塞进单文件 exe 的，于是这些死产物跟着发布出去。
+
+**实测（2026-10-25）**：合并前删掉了 `ServiceMainWindow` 那个窗口，合并后本地
+`dist\Release\` 里仍留着 `src\ui\ServiceMainWindow.xbf`；本地载荷 254 个文件、
+CI 载荷 253 个文件，**差异恰好就是这一个文件**。功能上无害（没人引用它），
+但有两个实打实的坏处：
+
+- 本地打出来的包和已发布的包**对不上**，用它做发布前验证会得出错误结论；
+- 「本地包 == CI 包」这条本该成立的等式不成立，排查时容易误判成构建坏了。
+
+**修法**：`build.bat` 在调用 MSBuild 之前先 `rmdir /s /q dist\Release`。
+路径用 `%~dp0` 锚定到脚本自身目录，免得在错误的当前目录下删掉别的项目的 `dist\Release`。
+代价实测：全量重建 17~42 秒，可以接受。
+
+**CI 天然免疫**：workflow 每次都在全新 checkout 上构建，输出目录本来就是空的。
+所以这问题**只影响本地打包** —— 而本地包正是发布前验证的对象，所以值得修。
+修完实测：本地包与已发布包的载荷**逐文件（名称 + 字节数）完全一致**，253 个文件全同。
 
 ## 版本号
 

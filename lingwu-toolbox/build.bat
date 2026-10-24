@@ -26,6 +26,25 @@ if not exist "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" (
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 exit /b 1
 
+rem Clean the output directory before building.
+rem
+rem MSBuild's incremental build never removes the output of a source file that
+rem no longer exists, so a renamed or removed XAML page leaves its compiled .xbf
+rem behind in dist\Release. packaging\make-sfx.ps1 copies that whole tree into
+rem the single-file package, so the shipped file would carry a dead resource.
+rem
+rem It also made a local package differ from the published one: CI always
+rem builds from a fresh checkout, so its payload holds only current files,
+rem while a local build kept the leftovers. Measured: the local tree carried
+rem src\ui\ServiceMainWindow.xbf, a page deleted during the merge, and the file
+rem lists differed by exactly that one entry.
+rem
+rem Only dist\Release is removed -- dist\package holds the packaged output and
+rem must survive. The path is anchored to this script's own directory (%~dp0)
+rem so it can never delete a dist\Release belonging to some other project.
+rem Set LINGWU_NO_CLEAN=1 to keep the tree for quick incremental iteration.
+if not "%LINGWU_NO_CLEAN%"=="1" if exist "%~dp0dist\Release" rmdir /s /q "%~dp0dist\Release"
+
 "%VSPATH%\MSBuild\Current\Bin\amd64\MSBuild.exe" LingwuToolbox.vcxproj -restore -p:Configuration=Release -p:Platform=x64 -m -v:minimal -nologo %*
 
 if errorlevel 1 (

@@ -33,6 +33,11 @@ build.bat
 改动源码后必须**跑一次 `build.bat` 并确认零错误零警告**（`/W3 /WX`）。
 `/MT` 静态 CRT 是硬要求，复验方式见 README 踩坑 15。
 
+`build.bat` **每次会先清空 `dist\Release\`**（全量重建实测 17~42 秒）：MSBuild 增量构建
+只覆盖不删除，已删源文件留下的 `.xbf` 会留在输出目录，而打包脚本把整个 `dist\Release\`
+塞进单文件 exe，不清理就会把死产物发出去（README 踩坑 32）。要快速迭代设
+`LINGWU_NO_CLEAN=1` 跳过清理。
+
 ## 2. 硬性约束
 
 这些是用户明确提出的预算，不要在没问过的情况下突破：
@@ -252,6 +257,12 @@ translation unit 里的原因之一。
     | `IShellItem::GetDisplayName` 第二参是 `LPWSTR*` | 它 `CoTaskMemAlloc` 自己长度的内存，不能塞进 `wchar_t[MAX_PATH]`，用 `CoTaskMemFree` 释放 |
     | `ContentDialog.Title/Content` 是 `IInspectable` | 必须 `box_value(...)`，直接传 `L"..."` 报 C2665 |
     | `AsyncStatus` → `winrt::Windows::Foundation` | 少一个 using 就是「未声明的标识符」 |
+
+22. **构建不清理输出目录**（README 踩坑 32 有完整实测）：`build.bat` 已在 MSBuild 之前
+    `rmdir /s /q dist\Release`。不要为了「增量快」把它去掉 —— 打包脚本把整个
+    `dist\Release\` 塞进单文件 exe，合并期删掉的源文件留下的 `.xbf` 会跟着发布出去。
+    **本地包与 CI 包的文件集必须逐项一致**（2026-10-25 实测：253 个文件，名称与
+    字节数全同；不一致就是本地 `dist\` 有残留，先清干净再打包）。
 
 ## 6. SCM 层的四个致命坑（服务模块，本节最贵）
 
