@@ -30,8 +30,12 @@
   涨幅全在头两个五分之一里（其中一次是 +26 MB 的一次性框架预热阶跃），
   句柄数 967 → 953 反而降了。
 
-  红线判定**只卡私有内存**；工作集含 Windows App Runtime 框架 DLL 的
+  红线 **220 MB 私有内存**（2026-10-24 在 Phase 6b 实测基线上重新拍板），
+  判定只卡私有内存；工作集含 Windows App Runtime 框架 DLL 的
   跨进程共享页，不计入红线（见「数据口径」）。
+  上一条 160 MB 是 2026-10-23 按「两个模块的后台管道同时常驻」定的，
+  **没有量过两个页面的列表都被实现出来的成本** —— 实测稳态 201.3 MB 已经
+  越过它，所以上调到实测峰值之上约 9% 的余量。
   详见 AGENTS.md「内存红线与基线」。
 
 ## 功能
@@ -239,6 +243,7 @@ lingwu-toolbox/
 │   ├── monitor/                  # 性能监视侧验收脚本
 │   ├── service/                  # 服务管理侧验收脚本
 │   └── build/                    # 构建工具（make-icon / install-winui-workload）
+│       └── run-all.ps1           #   整轮验收运行器
 └── AGENTS.md                     # 给 AI agent 的硬约束与踩坑清单
 ```
 
@@ -932,7 +937,25 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1
 ## 验证方法
 
 改完必须实机验证，不能只看编译通过。`tools\` 下 28 个脚本全部走 UI Automation
-（坐标注入在本机不可靠，UIA 能按 `AutomationId` 定位并读回断言）：
+（坐标注入在本机不可靠，UIA 能按 `AutomationId` 定位并读回断言）。
+
+**整轮一次跑完**：
+
+```powershell
+# 提权跑整轮（当前 shell 不是管理员时自己重提一次，整轮只弹一次 UAC）
+pwsh -NoProfile -File .\tools\build\run-all.ps1
+
+# 非提权跑：驱动清单改成 asInvoker 的验证副本，不弹 UAC，
+# 需要管理员的写操作脚本会报 SKIP 并写明原因
+pwsh -NoProfile -File .\tools\build\run-all.ps1 -Unelevated
+
+# 只跑一部分（-Only 是逗号串）
+pwsh -NoProfile -File .\tools\build\run-all.ps1 -Only 'monitor/close-flow,service/check'
+```
+
+运行器按 `[PASS]` / `[FAIL]` / `SKIP:` 三类标记统计，末尾写一份汇总到
+`%TEMP%\lingwu_toolbox_runs\summary.txt`。**SKIP 单独成一列** ——
+它是「本机跑不了」（环境限制），既不算通过也不算失败。
 
 | 脚本 | 验什么 |
 |---|---|

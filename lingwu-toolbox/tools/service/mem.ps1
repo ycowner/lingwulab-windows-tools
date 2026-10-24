@@ -31,14 +31,24 @@ param(
     [int]$IntervalSec = 5,
     # Private-bytes budget in MB. Exceeding it fails the script.
     #
-    # 160 MB, set by the project owner against a measured clean-instance
-    # steady state of 106.4 MB private / 161.3 MB working set on the reference
-    # machine (345 services, zero drift over a 60 s window). The headroom is
-    # deliberate: the interactive peak reaches ~149 MB private after filtering,
-    # selecting rows and expanding the detail panel, and different machines
-    # differ. The gate is on PRIVATE bytes only -- see the note above about why
-    # working set is recorded but never enforced.
-    [double]$PrivateBudgetMb = 160
+    # 220 MB, set by the project owner on 2026-10-24 against the Phase 6b
+    # five-scenario baseline of the MERGED toolbox: the steady state with both
+    # pages realised is 201.3 MB private / 251.5 MB working set (347 service
+    # rows plus ~200 process rows of ListView item containers).
+    #
+    # The previous 160 MB was set on 2026-10-23, when the merge was still
+    # assumed to cost only the two background pipelines; the page
+    # realisation cost had not been measured yet, and 160 cannot hold the
+    # normal state.
+    #
+    # NOTE this script measures the SERVICE page only (a clean instance that
+    # never visits the monitor page): that steady state is 113.8 MB private,
+    # well under the budget. The 201 MB figure is the two-pages-realised one.
+    #
+    # The headroom is deliberate: different machines differ, and the gate is
+    # on PRIVATE bytes only -- see the note above about why the working set
+    # is recorded but never enforced.
+    [double]$PrivateBudgetMb = 220
 )
 
 $ErrorActionPreference = 'Stop'
