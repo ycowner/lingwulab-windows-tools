@@ -224,7 +224,20 @@
                   ScrollViewer.HorizontalScrollMode="Disabled"
                   ScrollViewer.VerticalScrollBarVisibility="Auto"
                   ScrollViewer.VerticalScrollMode="Auto"
-                  Padding="32,0,32,0" />
+                  Padding="32,0,32,0">
+            <!--
+              列表面板：显式写出 ItemsStackPanel，并把 CacheLength 设成 0。
+              理由与数字见 MonitorPage.xaml 里同名注释（两页共用同一套数据）。
+
+              本页有 345 行、视口 485 DIP（15.2 行），默认面板会一次实现
+              76 个行容器；改成 CacheLength=0 之后只实现视口内的行。
+            -->
+            <ListView.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <ItemsStackPanel Orientation="Vertical" CacheLength="0" />
+                </ItemsPanelTemplate>
+            </ListView.ItemsPanel>
+        </ListView>
 
         <!-- ============================ 详情面板（只读） ============================ -->
         <Expander x:Name="DetailExpander"

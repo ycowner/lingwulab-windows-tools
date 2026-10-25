@@ -110,6 +110,7 @@ $scripts = @(
     @{ n = 'monitor/settings-reopen'; p = 'tools\monitor\settings-reopen.ps1'; t = 700 }
     @{ n = 'monitor/mem-rows';        p = 'tools\monitor\mem-rows.ps1';        t = 400 }
     @{ n = 'monitor/mem-scroll';      p = 'tools\monitor\mem-scroll.ps1';      t = 400 }
+    @{ n = 'monitor/virtualize';      p = 'tools\monitor\virtualize.ps1';      t = 400 }
     @{ n = 'monitor/diag';            p = 'tools\monitor\diag.ps1';            t = 240 }
     @{ n = 'monitor/shot';            p = 'tools\monitor\shot.ps1';            t = 240 }
     @{ n = 'monitor/repro-close';     p = 'tools\monitor\repro-close.ps1';     t = 300 }
@@ -156,7 +157,12 @@ foreach ($s in $scripts) {
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 
-    if ($s.prepare) {
+    # NOT $s.prepare directly: common.ps1 turns on Set-StrictMode -Version
+    # Latest, and under StrictMode reading a key that a hashtable does not
+    # have raises PropertyNotFoundException -- so every script WITHOUT a
+    # 'prepare' key used to print a red error block before it even started.
+    # ContainsKey is the check that does not throw.
+    if ($s.ContainsKey('prepare') -and $s['prepare']) {
         Write-Host ('  preparing: starting the app for ' + $s.n)
         $null = Start-Process $exe -PassThru
         Start-Sleep -Seconds 14
@@ -206,7 +212,7 @@ foreach ($s in $scripts) {
         Fail = $failCount; Skip = $skipCount; Line = $passLine
     }
 
-    if ($s.prepare) {
+    if ($s.ContainsKey('prepare') -and $s['prepare']) {
         Get-Process LingwuToolbox -ErrorAction SilentlyContinue |
             Stop-Process -Force -ErrorAction SilentlyContinue
     }

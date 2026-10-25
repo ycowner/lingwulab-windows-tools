@@ -263,6 +263,15 @@ translation unit 里的原因之一。
     `dist\Release\` 塞进单文件 exe，合并期删掉的源文件留下的 `.xbf` 会跟着发布出去。
     **本地包与 CI 包的文件集必须逐项一致**（2026-10-25 实测：253 个文件，名称与
     字节数全同；不一致就是本地 `dist\` 有残留，先清干净再打包）。
+23. **`ListView` 的默认面板是 `ItemsStackPanel`，不是 `VirtualizingStackPanel`**
+    （README 踩坑 33 有完整实测）。查 `generic.xaml` 时**按控件类型分开看**：
+    `<Style TargetType="ListView">` 里是 `ItemsStackPanel`，
+    `<Style TargetType="ListBox">` 里才是 `VirtualizingStackPanel` —— 认错面板会让
+    整个「虚拟化成本」分析跑偏（2026-10-25 实测，峰值 192.7 → 134.0 MB）。
+    想知道某个面板有哪些可设成员，**查 winmd / 生成的 cppwinrt 头**，
+    不要凭记忆或照抄 UWP 文档：`VirtualizingStackPanel` 没有 `VerticalCacheLength`，
+    `ItemsStackPanel` 才有 `CacheLength`；`ScrollViewer` 在 WinUI 3 里干脆没有
+    `CanContentScroll`。
 
 ## 6. SCM 层的四个致命坑（服务模块，本节最贵）
 
@@ -415,6 +424,117 @@ SCM 枚举管道**同时常驻** —— 切走的模块只是不往 UI 上灌，
 160 MB 那条线是 2026-10-23 按「切走的模块只是不往 UI 上灌」这个假设定的，
 **它是在没量过服务页 347 行实现成本的前提下定的**，
 所以它挡不住现在的正常状态。
+
+### 合并后的实测基线（2026-10-25，CacheLength=0 之后）
+
+同一份 `build\unelevated\LingwuToolbox.exe`（清单改成 `asInvoker` 的验证副本），
+`tools/common/mem-baseline.ps1 -SwitchRounds 60` 五个场景
+（**轮数与 2026-10-24 那份基线一致，两行可以直接对比**）：
+
+| 场景 | 时长 | 工作集 MB（起 > 终 / 峰） | 私有内存 MB（起 > 终 / 峰） | 增量 | 句柄 | 尾部 |
+|---|---|---|---|---|---|---|
+| idle（静止） | 59 s | 153.7 > 154.2 / 154.3 | 98.4 > 98.7 / 98.8 | +0.3 | 883 > 886 | flat |
+| **switch（两页互切 ×60）** | 112 s | 160.5 > 224.1 / 224.1 | 104.8 > 168.3 / 168.3 | +63.5 | 918 > 909 | 尾部一次 +26 MB 阶跃 |
+| hideshow（隐藏-显示 ×20） | 17 s | 222.3 > 222.6 / 223.5 | 168.4 > 167.8 / 168.8 | −0.6 | 897 > 895 | flat |
+| settings（设置开合 ×30） | 45 s | 227.6 > 228.0 / 228.0 | 169.8 > 172.7 / 172.7 | +2.9 | 956 > 954 | flat |
+| tray（托盘常驻 180 s） | 176 s | 229.8 > 228.6 / 229.8 | 174.5 > 172.4 / 174.5 | −2.1 | 953 > 948 | flat |
+
+**峰值：私有内存 174.5 MB / 工作集 229.8 MB。最高终值私有内存 172.7 MB。**
+**没有泄漏** —— 句柄数只降不涨，四个场景的尾部走平。
+
+对照 2026-10-24（改虚拟化之前）：**201.3 MB / 252.0 MB**。
+**私有内存峰值降了 26.8 MB，而红线一条没动。**
+
+> **`switch` 场景被脚本标成「RISING（可能泄漏）」—— 那是一次性阶跃，不是泄漏。**
+> 互切跑到第 58 轮左右有一次 **+26 MB 的单次跳变**（旧基线里也有同量级的一次），
+> 恰好落在脚本采样的最后三分之一里，于是被斜率判据抓住。
+> 用 120 轮逐轮采样验过（`build/_switch_curve.ps1` + `_curve_summary.py`）：
+> r58 跳到 165.5 之后一路走平到 172.7，**r60→r120 只涨了 6 MB**，之后不动。
+> **判据：绝对增量，不是斜率**（同 AGENTS.md「判据：阶跃 vs 泄漏」）。
+
+> `monitor/close-mem-ab.ps1` 的相对 delta 反而变大了（minrestore vs control
+> 从 +3.0 MB 变成 +29.7 MB），**这不是回归**：那个脚本比的是**相对对照组**，
+> 而对照组自己降了 38 MB（静置在监控页时从 134.9 MB 降到 97.1 MB）。
+> 每轮的绝对代价没变（最小化/还原 ≈ 6 MB/轮，两版本一致），
+> **绝对终值反而更低了**（hideshow 146.5 → 134.0 MB）。看绝对值。
+
+### ListView 的实现成本：真正的杠杆是 `ItemsStackPanel.CacheLength`（2026-10-25 实测）
+
+**这一节推翻了上面「84 MB 是 ListView 已实现容器」的说法 —— 那 84 MB 里绝大部分
+是可以直接消掉的，而且消掉之后 160 MB 那条线重新变得可守。**
+
+**先看走过的弯路**（都实测过，**都不是**主因，别再走一遍）：
+
+| 试过的 | 实测结果 |
+|---|---|
+| 每行只留 1 个 TextBlock（486 → 162 个） | 峰值 197.3 → 192.7 MB，只省 4.6 MB。**TextBlock 很便宜**（≈9.5 KB/个） |
+| 默认排序改成「名称↑」以消除重排 churn | 峰值 192.7 → 191.0 MB，几乎没变。**churn 不是主因** |
+| `VirtualizingStackPanel.VirtualizationMode="Recycling"` | 容器数不变（86），无效 |
+| `ScrollViewer.CanContentScroll="True"` | WinUI 3 的 `ScrollViewer` 没这个成员（WMC0010） |
+| `VirtualizingStackPanel.VerticalCacheLength` | 这个成员**不存在**，它只挂在 `ItemsRepeater` 上 |
+
+**根因：面板认错了。** 一直以为 `ListView` 的默认 `ItemsPanel` 是
+`VirtualizingStackPanel`（`generic.xaml` 第 26123 行确实有一处，但那是
+**`<Style TargetType="ListBox">` 的**）。`ListView` 自己那段
+（`generic.xaml` 第 8994 行）是：
+
+```xml
+<Style TargetType="ListView">
+  <Setter Property="ItemsPanel">
+    <Setter.Value>
+      <ItemsPanelTemplate>
+        <ItemsStackPanel Orientation="Vertical" />
+      </ItemsPanelTemplate>
+    </Setter.Value>
+  </Setter>
+```
+
+运行时探针实测报的是 `ListPanel: NOT a VirtualizingStackPanel` —— 面板本来就是
+`ItemsStackPanel`。而 `ItemsStackPanel` **有**一个可设的 `CacheLength`
+（`VirtualizingStackPanel` 没有），WinUI 3 的默认值会把视口之外的行也预先实现出来：
+视口 541 DIP（16.9 行）实测一次实现 **86 个行容器 = 视口行数 × 5**。
+
+**修法**：两个列表都显式写出面板并把缓存清零（见 `MonitorPage.xaml` /
+`ServicePage.xaml` 里的 `ListView.ItemsPanel`）：
+
+```xml
+<ListView.ItemsPanel>
+  <ItemsPanelTemplate>
+    <ItemsStackPanel Orientation="Vertical" CacheLength="0" />
+  </ItemsPanelTemplate>
+</ListView.ItemsPanel>
+```
+
+`CacheLength=0` = 视口之外一行都不预先实现，滚到哪实现到哪。
+**面板类型没换**（还是 `ItemsStackPanel`），只改了缓存长度，
+所以滚动、选中、监控页右键命中的算术定位全都不受影响。
+
+**实测（同一份 `build\unelevated\LingwuToolbox.exe`，25 轮两页互切）**：
+
+| | 默认 | `CacheLength="0"` |
+|---|---|---|
+| 监控页一次实现的行容器 | 86 | **18**（= 视口 16.9 行 + 1） |
+| 服务页一次实现的行容器 | 76 | **16~17**（= 视口 15.2 行 + 1） |
+| 逐槽 `SetAt` 次数（重排垃圾） | 927 | **260** |
+| 峰值私有内存 | 192.7 MB | **134.0 MB** |
+| 峰值工作集 | 245.3 MB | **189.7 MB** |
+
+**放到整套基线口径上**（`mem-baseline.ps1 -SwitchRounds 60`，与 2026-10-24 同口径）：
+全场景峰值私有内存 **201.3 → 174.5 MB**，工作集 **252.0 → 229.8 MB**，
+服务页稳态 **113.8 → 101.9 MB**。
+
+**为什么重排次数也跟着降了**：容器从 86 降到 18，一次结构性失效要重建的容器就少 4.8 倍。
+这是「少实现容器」顺带的红利，不是单独做的优化。
+
+**代价与护栏**：`CacheLength=0` 的失败模式是**静默**的 —— 面板如果把 `extent`
+只按已实现行算，列表就滚不到底，而界面上完全看不出异常。
+所以必须有 `tools/monitor/virtualize.ps1` 断言：
+
+- 滚到底后 `VerticalScrollPercent ≈ 100`；
+- `VerticalViewSize`（视口占总长百分比）**很小** —— 实测监控页 8.8%
+  （541 ÷ 6144 = 视口 ÷ 192 行）、服务页 4.4%（485 ÷ 11040 = 视口 ÷ 345 行）。
+  面板若只按已实现行算 `extent`，这个比例会接近 90%~100%，断言立刻失败；
+- 已实现行数 ≤ 40 —— 哪天有人把 `CacheLength` 改回去，这里会先红。
 
 ### 为什么工作集绝对不能当红线（2026-10-24 托盘阶段实测到硬证据）
 
@@ -608,6 +728,7 @@ tools/
 | `tools/monitor/mem.ps1` | 私有内存曲线（工作集/私有内存都记） |
 | `tools/monitor/mem-rows.ps1` | 内存曲线与真实行数对齐 |
 | `tools/monitor/mem-scroll.ps1` | 滚动是不是 +26 MB 阶跃的触发条件 |
+| `tools/monitor/virtualize.ps1` | 列表虚拟化**真的到底了**：滚动总长覆盖全部行 + 已实现行数不超限 |
 | `tools/monitor/close-flow.ps1` | 关闭确认框全流程 T1~T9 |
 | `tools/monitor/close-ab.ps1` | 真隐藏到托盘的内存 A/B |
 | `tools/monitor/close-hide-dlg.ps1` | `CloseAction=1` 时隐藏不经过对话框 |

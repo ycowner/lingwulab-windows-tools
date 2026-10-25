@@ -58,6 +58,16 @@ bool ContainsCI(std::wstring hay, const std::wstring& needle) {
     for (auto& c : n) c = static_cast<wchar_t>(::towlower(c));
     return hay.find(n) != std::wstring::npos;
 }
+// 身份键用的名字归一化。
+//
+// core::BuildViews 用 NameLess（大小写无关）合并同名进程，所以聚合口径下
+// 「Chrome.exe」与「chrome.exe」是同一组。组的代表名取自 pid 最小的那个进程 ——
+// 那个进程死了，代表名的大小写拼写就可能变。所以键必须用**大小写无关**的形式，
+// 否则同一个组会因为拼写变化而换身份，又回到「行集合抖动 → 结构性失效」。
+std::wstring LowerCopy(std::wstring s) {
+    for (auto& c : s) c = static_cast<wchar_t>(::towlower(c));
+    return s;
+}
 // 行高必须与 MonitorPage.xaml 里 DataTemplate 的 <Grid Height="32"> 保持一致。
 // 右键命中测试是**算术**定位：VisualTreeHelper::GetChildren 在这版投影里不存在
 //（只有 GetChildrenCount / GetParent），没法遍历已实现的行容器去算包围盒，
@@ -418,8 +428,36 @@ void MonitorPage::RebuildRows() {
         // 键用**原始**应用名而不是显示名：显示名会被 FriendlyAppName 在若干帧内
         // 慢慢补齐（前几帧往往还是进程名），拿它当身份会在名字解析完成的那一刻
         // 被误判成「旧应用消失 + 新应用出现」，白白重建一次容器。
-        d.key = a.name + L'\x1f' +
-                std::to_wstring(a.pidCount ? view.pids[a.pidStart] : 0);
+        //
+        // 【聚合口径下键里不能再带 pid —— 2026-10-25 实测】
+        // core::BuildViews 保证**同名只有一组**，所以聚合口径下一行的身份就是
+        // 名字本身，pid 已经被单独跟踪（进程数列 + 右键「结束任务」用的 pid 区间）。
+        //
+        // 原来这里用的是「名字 + 组内最小 pid」。而组内 pid 是升序排的
+        // （top10.cpp 按名后按 pid 排序再扫同名连续段），所以最小 pid 就是
+        // **最先创建的那个进程**的 pid —— 浏览器/后台服务的高频子进程一死，
+        // 最小 pid 就易主，键随之改变。
+        //
+        // 后果实测（改之前的状态，25 轮互切，trace 逐帧计数）：
+        //   55 次提交里 **16 次是「行数变了」的结构性失效**，
+        //   每次都连带 37~76 次逐槽 SetAt（插入/删除让后续槽位整体移位），
+        //   累计 927 次 SetAt = 927 次行容器作废重建。
+        //   行数轨迹：192 → 194 → 192 → 193 → 192 → 191 → 192 → 193 → 190 …
+        //   也就是说行集合在持续 ±1~2 抖动。
+        //
+        // 【但要诚实：这**不是**峰值的主因】。同样口径下把排序换成稳定的
+        // 「名称↑」（churn 基本归零）实测峰值 192.7 → 191.0 MB，几乎没变。
+        // 峰值的主因是**一次实现了多少个行容器**（默认 86 个；改成
+        // CacheLength=0 之后是 18 个），见 MonitorPage.xaml 里 CacheLength 那段。
+        // 这条键修正的价值是让行身份稳定、少做无谓的容器重建，
+        // 以及修掉「同一应用因为最小 pid 易主而被当成新应用」这个真缺陷。
+        //
+        // 逐进程口径下每个进程是独立一行，键必须带 pid（同一名字可能有多个进程），
+       // 那一档的键本来就应该用 pid。
+        d.key = aggregate_
+                ? LowerCopy(a.name)
+                : (a.name + L'\x1f' +
+                   std::to_wstring(a.pidCount ? view.pids[a.pidStart] : 0));
         next.push_back(std::move(d));
     }
     visibleCount_ = next.size();

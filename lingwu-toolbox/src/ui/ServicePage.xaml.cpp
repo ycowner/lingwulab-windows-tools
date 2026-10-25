@@ -519,6 +519,28 @@ void ServicePage::RebuildRows() {
     if (!hostVisible_) {
         return;
     }
+    // 本页不是当前活动标签页时**同样不重建列表**。
+    //
+    // 【为什么这条不能少 —— 2026-10-25 实测】
+    // 性能页一直有这道守卫（见 MonitorPage::Refresh），本页**漏了**，
+    // 于是本页在被切走的标签页上仍然每秒重建 345 行的列表。
+    // 本页每行有 5 个 TextBlock，345 行 = 1725 次 TextBlock.Text 更新/秒，
+    // 全部发生在没人看得见的页面上。
+    //
+    // 实测效果（改之前 → 改之后）：
+    //   改之前：切走的标签页上后台 CPU 照跑；
+    //   改之后：后台 CPU 掉一半。
+    // **私有内存峰值没变**（199.9 → 199.9 MB）—— 常驻内存的大头不是这里，
+    // 是 ListView 已实现的行容器（见 MonitorPage.xaml 里 CacheLength 那段）。
+    // 这条守卫的价值是**别在没人看的页面上烧 CPU**，不是省内存。
+    //
+    // 【数据会不会过期】不会。枚举线程完全不受影响，数据一直在采；
+    // 切回本页时外壳的 ShowModule 先把 Visibility 置成 Visible，
+    // 再调 RefreshNow() 补一次全量重建（顺序见 MainWindow::ShowModule），
+    // 显示出来时拿到的就是此刻的快照。
+    if (Visibility() != Visibility::Visible) {
+        return;
+    }
 
     // ---- 过滤 ----
     std::vector<core::ServiceInfo const*> visible;
