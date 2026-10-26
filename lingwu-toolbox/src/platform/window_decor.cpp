@@ -88,6 +88,26 @@ void ApplyWindowDecorations(HWND hwnd) {
     }
 }
 
+void RaiseWithoutActivate(HWND hwnd) {
+    if (!hwnd) {
+        return;
+    }
+    // HWND_TOP + SWP_NOACTIVATE = 提到最前但不激活。
+    //
+    // 【为什么不用 SetForegroundWindow / ShowWindow(SW_SHOW)】
+    // 那两个都会**激活**窗口，把键盘焦点抢走 —— 用户正在输入的东西被打断。
+    // 「看一眼指标」不需要焦点，所以只动 z-order，不动激活状态。
+    //
+    // 【为什么带 SWP_NOOWNERZORDER】
+    // 不希望顺带把 owner 窗口（托盘消息窗）也一起提到前面 ——
+    // 它只是个消息窗口，提它没有意义。
+    //
+    // 返回值不检查：SetWindowPos 失败时窗口照样在，只是没提到最前，
+    // 而那不是致命错误（面板仍然能点、能用）。
+    ::SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+}
+
 std::wstring DescribeOsVersion() {
     // RtlGetVersion 是唯一可靠的版本取法：GetVersionEx 在 manifest 缺 supportedOS
     // 时会谎报 6.2。本项目 manifest 已声明 Win10/11，但 RtlGetVersion 没有这个坑。

@@ -252,6 +252,8 @@ void RefreshTrayIconAfterPromote() {
 constexpr UINT IDM_TRAY_MAIN     = 0x1001;
 constexpr UINT IDM_TRAY_SETTINGS = 0x1002;
 constexpr UINT IDM_TRAY_EXIT     = 0x1003;
+// 指标面板：与托盘**左键**同一个动作，菜单里的第二个入口。
+constexpr UINT IDM_TRAY_PANEL    = 0x1004;
 constexpr UINT IDM_TRAY_STATUS   = 0x1010;
 constexpr UINT IDM_TRAY_SERVICE  = 0x1011;
 // 规划中的四个页签。菜单里置灰占位，与标题栏导航一一对应。
@@ -281,6 +283,14 @@ void ShowTrayMenu(HWND owner) {
 
     // 菜单契约见 tray_icon.h 的 TrayCallbacks 注释。
     AppendMenuW(m, MF_STRING, IDM_TRAY_MAIN, L"显示工具箱");
+    // 指标面板：与托盘**左键**是同一个动作。
+    //
+    // 【为什么菜单里也要有一份】
+    // 只靠左键的话，用户右键托盘图标看到的是一份**没有它**的菜单 ——
+    // 「这个功能不存在」的印象就此形成（2026-10-26 实测真有人找不到）。
+    // 托盘左键是个**隐藏手势**（大多数人对托盘图标的预期是「右键看菜单」），
+    // 菜单才是看得见的入口。两个入口指向同一个动作，不存在两套语义。
+    AppendMenuW(m, MF_STRING, IDM_TRAY_PANEL, L"指标面板");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     // 尚未实现的四个页签：置灰占位。
     // 【为什么还要留着】菜单与标题栏的导航长得一样，用户才知道
@@ -326,6 +336,11 @@ void ShowTrayMenu(HWND owner) {
         case IDM_TRAY_MAIN:
             platform::GuardCallback("tray.onShowMain", [&]{
                 if (g_cb.onShowMain) g_cb.onShowMain();
+            });
+            break;
+        case IDM_TRAY_PANEL:
+            platform::GuardCallback("tray.onShowPanel", [&]{
+                if (g_cb.onShowPanel) g_cb.onShowPanel();
             });
             break;
         case IDM_TRAY_CLEAN:

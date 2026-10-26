@@ -254,6 +254,21 @@ void TrayPanel::ShowPanel() {
         return;
     }
     if (timer_) timer_.Start();
+    // 提到 z-order 顶部，但**不抢焦点**。
+    //
+    // 【为什么必须这一步 —— 这是「面板看不见」的真凶】
+    // Show(false) 只「显示」窗口，**不会**把它提到 z-order 顶部，
+    // 它留在被创建时的那个层级。而面板是启动时就构造好的
+    // （构造一次 + 隐藏/显示，见本文件头部的注释），
+    // 那个层级早就被后来被拉到前面的窗口盖住了。
+    // 症状：点了托盘图标，面板**确实弹出来了**，却被前台窗口完全压住，
+    // 用户看到的只是「点了没反应」—— 于是以为根本没有这个功能。
+    //
+    // 【为什么用 RaiseWithoutActivate 而不是直接 Show(true)】
+    // Show(true) 会激活窗口、抢走键盘焦点，用户正在输入的东西会被打断。
+    // 「看一眼当前指标」不需要焦点：提到最前让人看见，焦点留给原窗口。
+    platform::RaiseWithoutActivate(hwnd_);
+
     // 面板已经可见、布局也跑过了，这一次画出来的内容是实的。
     UpdateNow();
     LINGWU_TRACE("TrayPanel: shown");

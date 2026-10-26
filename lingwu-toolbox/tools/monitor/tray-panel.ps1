@@ -34,11 +34,79 @@ Add-Type -Namespace Native -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
 [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
 [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+[DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
+[DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
 [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+'@
+
+# ---- 托盘右键菜单要用的 Win32 口子 ----------------------------------------
+# 【为什么需要这一整块】
+# 要验收「托盘右键菜单里有『指标面板』这一项、而且点了它会弹出面板」，
+# 就必须真的把那个菜单**打开**并读它的内容。
+#
+# 【为什么用键盘而不是鼠标】
+# 本机实测 SendInput 合成鼠标点击**点不动** Win11 托盘的 XAML island
+# （tools/monitor/tray-click.ps1 有同一个结论，它为此报 SKIP 而不是 FAIL）。
+# 但**键盘**能行：把焦点放到托盘按钮上，Shift+F10 弹出上下文菜单。
+# 菜单是经典 Win32 弹出菜单（class #32768），于是可以用
+# MN_GETHMENU 拿到 HMENU，再逐项读文本和命令 ID —— 读到的是
+# **产品自己构造的那份菜单**，不是脚本自己复刻的一份。
+Add-Type -Namespace Native -Name Menu -MemberDefinition @'
+public delegate bool EnumProc(IntPtr h, IntPtr l);
+[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, System.Text.StringBuilder s, int n);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+[DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+[DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr m);
+[DllImport("user32.dll")] public static extern uint GetMenuItemID(IntPtr m, int pos);
+[DllImport("user32.dll")] public static extern uint GetMenuState(IntPtr m, uint item, uint flags);
+[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuStringW(IntPtr m, uint item, System.Text.StringBuilder s, int n, uint flags);
+'@
+
+# 键盘输入：VK_DOWN / VK_RETURN。字段名必须与 Win32 的 KEYBDINPUT 一致
+# （wVk / wScan / dwFlags），写错编译器只会说「找不到字段」。
+Add-Type -Language CSharp @'
+using System;
+using System.Runtime.InteropServices;
+
+public class Keys {
+    [StructLayout(LayoutKind.Explicit)]
+    public struct IU { [FieldOffset(0)] public MI mi; [FieldOffset(0)] public KI ki; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MI { public int dx, dy; public uint md, df, t; public IntPtr e; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KI { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT { public int type; public IU u; }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint SendInput(uint n, INPUT[] i, int cb);
+
+    public static void Key(ushort vk) {
+        INPUT[] a = new INPUT[2];
+        a[0].type = 1; a[0].u.ki.wVk = vk; a[0].u.ki.wScan = 0; a[0].u.ki.dwFlags = 0;
+        a[1].type = 1; a[1].u.ki.wVk = vk; a[1].u.ki.wScan = 0; a[1].u.ki.dwFlags = 2;
+        SendInput(2, a, Marshal.SizeOf(typeof(INPUT)));
+        System.Threading.Thread.Sleep(160);
+    }
+
+    // Shift+F10 —— 「上下文菜单键」的键盘等价物。
+    // 托盘图标是 XAML island 的按钮，右键菜单由 shell 弹出，
+    // Shift+F10 走的是同一套「这个控件有上下文菜单」逻辑。
+    public static void ShiftF10() {
+        INPUT[] a = new INPUT[4];
+        a[0].type = 1; a[0].u.ki.wVk = 0x10; a[0].u.ki.dwFlags = 0;
+        a[1].type = 1; a[1].u.ki.wVk = 0x79; a[1].u.ki.dwFlags = 0;
+        a[2].type = 1; a[2].u.ki.wVk = 0x79; a[2].u.ki.dwFlags = 2;
+        a[3].type = 1; a[3].u.ki.wVk = 0x10; a[3].u.ki.dwFlags = 2;
+        SendInput(4, a, Marshal.SizeOf(typeof(INPUT)));
+        System.Threading.Thread.Sleep(220);
+    }
+}
 '@
 
 $AE = [System.Windows.Automation.AutomationElement]
@@ -280,6 +348,48 @@ if ($panel) {
         $bmp.Dispose()
     }
 
+    # ---- ⑦ 面板在屏幕上真的看得见（z-order 回归）--------------------------
+    # 【为什么必须断言这一条 —— 它抓的是一个已经发生过的缺陷】
+    # 面板是**启动时构造**、之后只隐藏/显示的。而 `AppWindow::Show(false)`
+    # （不抢焦点）**不会**把窗口提到 z-order 顶部，它留在被创建时的那个层级 ——
+    # 于是被后来被拉到前面的窗口完全压住，**用户根本看不见**。
+    # 症状极其隐蔽：UIA 查得到元素、PrintWindow 也画得出内容（它让窗口自己画），
+    # 唯独「屏幕上那一块」是别人的窗口。之前所有断言都落在前两者上，
+    # 这个缺陷正好从缝里漏了过去。
+    #
+    # 【判据：问系统「这个屏幕位置最上面是谁」】
+    # 用 WindowFromPoint 取探针点最上层的窗口，再取它的**顶层祖先**，
+    # 跟面板比对。
+    #
+    # 【为什么不能直接比 hwnd —— 这里踩过坑】
+    # WinUI 3 的界面内容挂在一个**子窗口**上
+    # （Microsoft.UI.Content.DesktopChildSiteBridge），
+    # WindowFromPoint 返回的是这个子窗口，不是面板那个顶层 HWND。
+    # 直接比 hwnd 会永远判 FAIL，而面板其实好好地在那儿。
+    # GetAncestor(hit, GA_ROOT) 才是「这块屏幕归哪个顶层窗口」。
+    #
+    # 【判据为什么可靠】
+    # 探针点取 CPU 磁贴副标题的中心 —— 那是面板里实实在在有内容的位置。
+    # 若面板被别人压住，这里返回的是**别人的**顶层窗口 ≠ 面板 → FAIL；
+    # 若面板在最前，这里返回面板自己（或它的子窗口，祖先是面板）→ PASS。
+    $hitOk = $false
+    $hitInfo = '没有可用的探针点'
+    if ($anchor) {
+        $ar = $anchor.Current.BoundingRectangle
+        $px = [int]($ar.X + $ar.Width / 2)
+        $py = [int]($ar.Y + $ar.Height / 2)
+        $probePt = New-Object Native.Win+POINT
+        $probePt.X = $px
+        $probePt.Y = $py
+        $hit = [Native.Win]::WindowFromPoint($probePt)
+        $root = [Native.Win]::GetAncestor($hit, 2)   # GA_ROOT
+        $hitOk = ($root.ToInt64() -eq [int]$panel.Hwnd)
+        $hitInfo = ("probe=({0},{1}) 命中={2} 顶层祖先={3} 面板={4}" -f `
+            $px, $py, $hit, $root, $panel.Hwnd)
+    }
+    Assert-True '⑦ 面板在屏幕上真的可见（z-order 在最前，没被别的窗口压住）' `
+        $hitOk $hitInfo
+
     # ---- ⑥ 进程表的三列：顺序、不重叠、没被裁掉 ---------------------------
     # 【为什么这三条要断言】
     # 旧实现把三列宽度写死成 228 + 62 + 44 = 334 DIP，
@@ -393,6 +503,131 @@ if ($panel2) {
         if ($null -eq (Get-TrayPanelWindow $wins (Get-MainWindow $wins))) { $gone = $true; break }
     }
     Assert-True '② 再点一次托盘 → 面板收起' $gone
+}
+
+# ---- ⑧ 托盘右键菜单里有「指标面板」入口 --------------------------------
+# 【这一条抓的是什么】
+# 2026-10-26 用户反馈「找不到托盘指标面板的入口」。根因之一就是
+# 右键菜单里**没有**这一项 —— 唯一入口是托盘左键，而左键是个
+# **隐藏手势**（大多数人点托盘图标预期是「右键看菜单」）。
+# 菜单是用户找功能时唯一会去看的地方，它必须列出来。
+#
+# 【怎么验才不作弊】
+# 读的是**产品自己弹出来的那份菜单**：#32768 弹出菜单窗口 →
+# MN_GETHMENU 拿到 HMENU → 逐项读文本和命令 ID。
+# 脚本自己复刻一份菜单定义再断言，等于什么都没验。
+#
+# 【为什么用键盘打开菜单】
+# 本机实测 SendInput 合成鼠标点击点不动 Win11 托盘的 XAML island
+# （tools/monitor/tray-click.ps1 为此报 SKIP 而不是 FAIL）。
+# 键盘行得通：焦点放到托盘按钮上，Shift+F10 弹上下文菜单。
+# 打不开 → 报 SKIP（本机环境限制），不报 FAIL。
+#
+# 【为什么菜单项要按 ID 定位，而不是按文本找】
+# 文本可能被改，ID 是契约（「指标面板」永远是 0x1004）。
+# 断言要同时锁住**位置**（紧跟在「显示工具箱」下面）和**文本**。
+$menuHwnd = [IntPtr]::Zero
+$menuSkip = ''
+
+$trayCtx = Get-ToolboxTrayButton
+if (-not $trayCtx -or -not $trayCtx.Button) {
+    $menuSkip = '托盘按钮拿不到（图标不在可见区也不在溢出区）'
+} else {
+    try { $trayCtx.Button.SetFocus() } catch { }
+    Start-Sleep -Milliseconds 400
+    [Keys]::ShiftF10()
+    Start-Sleep -Milliseconds 1200
+
+    $script:menuFound = [IntPtr]::Zero
+    $enumCb = [Native.Menu+EnumProc]{
+        param($h, $l)
+        $sb = New-Object System.Text.StringBuilder 256
+        [void][Native.Menu]::GetClassNameW($h, $sb, 256)
+        if ($sb.ToString() -eq '#32768') {
+            $wp = 0
+            [void][Native.Menu]::GetWindowThreadProcessId($h, [ref]$wp)
+            if ([int]$wp -eq $pid_) { $script:menuFound = $h; return $false }
+        }
+        return $true
+    }
+    [void][Native.Menu]::EnumWindows($enumCb, [IntPtr]::Zero)
+    $menuHwnd = $script:menuFound
+    if ($menuHwnd -eq [IntPtr]::Zero) {
+        $menuSkip = 'Shift+F10 没弹出本进程的托盘右键菜单（托盘 XAML island 不接受键盘上下文菜单）'
+    }
+}
+
+if ($menuSkip) {
+    Write-Output ("  SKIP: ⑧ 托盘右键菜单的「指标面板」入口 —— {0}" -f $menuSkip)
+} else {
+    # MN_GETHMENU：从弹出菜单窗口拿回菜单句柄
+    $hm = [Native.Menu]::SendMessage($menuHwnd, 0x01E1, [IntPtr]::Zero, [IntPtr]::Zero)
+    $posCount = [Native.Menu]::GetMenuItemCount($hm)
+
+    # 逐项读出来：文本 + 命令 ID（分隔符的 ID 是 0、文本为空）
+    $items = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $posCount; $i++) {
+        $sb = New-Object System.Text.StringBuilder 256
+        [void][Native.Menu]::GetMenuStringW($hm, [uint32]$i, $sb, 256, 0x0400)  # MF_BYPOSITION
+        $items.Add(@{ Pos = $i; Id = [Native.Menu]::GetMenuItemID($hm, $i); Text = $sb.ToString() })
+    }
+    $textItems = @($items | Where-Object { $_.Text -ne '' })
+
+    Assert-True '⑧ 托盘右键菜单有 10 个菜单项' ($textItems.Count -eq 10) `
+        ("count=" + $textItems.Count)
+
+    $panelItem = @($textItems | Where-Object { $_.Id -eq 0x1004 })
+    Assert-True '⑧ 菜单里有「指标面板」这一项（命令 ID 0x1004）' ($panelItem.Count -eq 1) `
+        ("found=" + $panelItem.Count)
+
+    if ($panelItem.Count -eq 1) {
+        $pi = $panelItem[0]
+        Assert-True '⑧「指标面板」紧跟在「显示工具箱」下面' `
+            (($pi.Pos -eq 1) -and ($textItems[0].Text -eq '显示工具箱')) `
+            ("pos=" + $pi.Pos + " text[0]='" + $textItems[0].Text + "'")
+
+        Assert-True '⑧「指标面板」的菜单文字正确' ($pi.Text -eq '指标面板') `
+            ("text='" + $pi.Text + "'")
+
+        # 真的点它：键盘把高亮移到这一项，按回车。
+        # 【为什么要验「点下去会怎样」】
+        # 菜单里有这一项 ≠ 点了有用。这一步走的是产品的真实链路：
+        # 菜单项 → TrackPopupMenu 返回命令 → 回调 → 面板弹出。
+        $hilite = -1
+        for ($i = 0; $i -lt $posCount; $i++) {
+            $st = [Native.Menu]::GetMenuState($hm, [uint32]$i, 0x0400)   # MF_BYPOSITION
+            if (($st -band 0x0080) -ne 0) { $hilite = $i; break }        # MF_HILITE
+        }
+        for ($step = 0; $step -lt 12 -and $hilite -ne $pi.Pos; $step++) {
+            [Keys]::Key(0x28)    # VK_DOWN
+            for ($i = 0; $i -lt $posCount; $i++) {
+                $st = [Native.Menu]::GetMenuState($hm, [uint32]$i, 0x0400)
+                if (($st -band 0x0080) -ne 0) { $hilite = $i; break }
+            }
+        }
+        Assert-True '⑧ 菜单高亮能移到「指标面板」上' ($hilite -eq $pi.Pos) `
+            ("hilite=" + $hilite + " want=" + $pi.Pos)
+
+        if ($hilite -eq $pi.Pos) {
+            [Keys]::Key(0x0D)    # VK_RETURN
+            Start-Sleep -Milliseconds 800
+            $menuPanel = $null
+            for ($i = 0; $i -lt 30; $i++) {
+                Start-Sleep -Milliseconds 400
+                $wins = Get-AppWindows $pid_
+                $menuPanel = Get-TrayPanelWindow $wins (Get-MainWindow $wins)
+                if ($menuPanel) { break }
+            }
+            Assert-True '⑧ 点菜单里的「指标面板」→ 面板弹出' ($null -ne $menuPanel) `
+                ("hwnd=" + $(if ($menuPanel) { $menuPanel.Hwnd } else { 'none' }))
+
+            # 收尾：把面板收起，别把状态留给下一个用例
+            if ($menuPanel) {
+                Invoke-ToolboxTrayButton | Out-Null
+                Start-Sleep -Milliseconds 800
+            }
+        }
+    }
 }
 
 Write-Output ""

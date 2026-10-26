@@ -26,6 +26,24 @@ bool SupportsSystemBackdropAttribute();
 // 重复调用是安全的（幂等）。
 void ApplyWindowDecorations(HWND hwnd);
 
+// 把窗口提到 z-order 顶部，但**不激活**它（键盘焦点留在原窗口）。
+//
+// 【为什么需要它】
+// `AppWindow::Show(false)`（不抢焦点）只「显示」窗口，**不会**把它提到
+// z-order 顶部 —— 窗口留在它被创建时的层级。而托盘面板是**启动时就构造**
+// 的（构造一次 + 隐藏/显示），那个层级早就被后来被拉到前面的窗口盖住了。
+// 症状：点了托盘图标，面板确实弹出来了，却**完全看不见**（被前台窗口压住），
+// 用户看到的只是「点了没反应」。
+//
+// 【为什么用 HWND_TOP 而不是 HWND_TOPMOST】
+// HWND_TOPMOST 会让面板浮在**所有**窗口之上，包括用户之后打开的那些 ——
+// 对一个「看一眼就收」的浮层来说那是负担。HWND_TOP 只保证弹出那一刻在最上面。
+//
+// 【为什么用 SWP_NOACTIVATE 而不是 SetForegroundWindow】
+// 激活会把键盘焦点抢走，用户正在输入的东西会被打断；
+// 而「看一眼当前指标」这件事不需要焦点。
+void RaiseWithoutActivate(HWND hwnd);
+
 // 供日志/诊断显示的版本描述，例如 "Windows 11 (build 26300)"。
 std::wstring DescribeOsVersion();
 
