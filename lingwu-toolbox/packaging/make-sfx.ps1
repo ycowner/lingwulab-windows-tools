@@ -27,7 +27,7 @@ param(
     # release workflow prints a notice so the stale literal gets updated; it
     # deliberately does not fail the build, because a bookkeeping mismatch in
     # this file must never block a correctly-tagged release.
-    [string]$Version = '0.0.2'
+    [string]$Version = '0.0.3'
 )
 
 $ErrorActionPreference = 'Stop'

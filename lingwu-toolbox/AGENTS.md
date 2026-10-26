@@ -2,7 +2,7 @@
 
 面向在本目录内改代码的 AI agent / 人类开发者。**动手前必读。**
 
-本目录是 C++/WinRT + WinUI 3 实现，版本 **0.0.2**（上一版 0.0.1 的 tag 与 release
+本目录是 C++/WinRT + WinUI 3 实现，版本 **0.0.3**（已发布版本的 tag 与 release
 保留原处，不移动）。它同时包含两个模块：**性能监视**（进程表）和**服务管理**
 （Windows 服务表），两者在同一个窗口里用**六页签导航容器**切换
 （清理 / 应用 / 优化 / 分析 / 状态 / 服务，前四个是「规划中」禁用态），
@@ -1198,7 +1198,7 @@ HWND 从 UIA 的 `NativeWindowHandle` 取。
 
 ## 12. 平台兼容
 
-- 最低支持 **Win10 1809 (17763)**；目标 SDK `10.0.26100.0`，
+- 最低支持 **Win10 1809 (17763)**；目标 SDK `10.0.36100.0`，
   `WindowsTargetPlatformMinVersion` 锁 `10.0.17763.0`
 - **Win11 专属能力一律运行时门控**，统一收敛到 `src/platform/window_decor.h`
   （自实现 `IsAtLeastBuild`，不用 `VersionHelpers.h` 的 `IsWindowsVersionAtLeast`，
@@ -1256,6 +1256,6 @@ trace 的打开方式：环境变量 `LINGWU_TRACE` 非空，**或**存在标记
 | 默认视图 | 全部服务（与 `services.msc` 一致） |
 | 详情面板 | **默认折叠**，不自动展开 |
 | 内存红线 | **私有内存 220 MB**（工作集只记录，不卡）—— 2026-10-24 在 Phase 6b 实测基线（稳态 201.3 MB）上重新拍板；2026-10-26 六场景复测峰值 **183.6 MB**，余量 36.4 MB |
-| 版本 | 从 `0.0.1` 起，当前 `0.0.2`（tag `lingwu-toolbox-v*`，已发布的 tag 不移动） |
+| 版本 | 从 `0.0.1` 起，当前 `0.0.3`（tag `lingwu-toolbox-v*`，已发布的 tag 不移动） |
 | 验收脚本目录 | **子目录 + 去冗余前缀**：`tools/common/` `tools/monitor/` `tools/service/` `tools/build/` |
 | 非提权 shell 跑验收 | **自动提权重跑**（`-Verb RunAs` 重启自己，输出重定向到临时日志，子进程结束后回显日志并透传退出码） |

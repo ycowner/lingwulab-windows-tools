@@ -1,4 +1,4 @@
-# 零物工具箱（v0.0.2）
+# 零物工具箱（v0.0.3）
 
 一个常驻托盘的 Windows 系统小工具，两个模块共用一个窗口：
 
@@ -1242,24 +1242,25 @@ GetAncestor(hit, GA_ROOT) →  WinUI Desktop           ← 顶层祖先 = 面板
 
 ## 版本号
 
-**当前版本：v0.0.2**（2026-10-26，仿 Mole 改造 Phase 1：六页签外壳 + 状态页
-4×2 磁贴 + 托盘指标面板）。
+**当前版本：v0.0.3**（2026-10-26，托盘指标面板的可见性修复 +
+右键菜单加「指标面板」入口）。
 
-上一版是 **v0.0.1**（2026-10-23 合并成工具箱）。它的 tag `lingwu-toolbox-v0.0.1`
-与对应的 release **保留原处，不移动** —— 已发布的 tag 是既成事实。
+上一版是 **v0.0.2**（2026-10-26，仿 Mole 改造 Phase 1：六页签外壳 + 状态页
+4×2 磁贴 + 托盘指标面板），再上一版是 **v0.0.1**（2026-10-23 合并成工具箱）。
+它们的 tag 与对应的 release **都保留原处，不移动** —— 已发布的 tag 是既成事实。
 
 版本号出现在 4 个地方，必须一起改。前三处是**元数据可见**的：
 
 | 位置 | 形态 | 作用 |
 |---|---|---|
-| `resources/app.rc` | `0.0.2.0` | exe 的 `FileVersion` / `ProductVersion`（属性对话框「详细信息」页） |
-| `resources/app.manifest` | `0.0.2.0` | `assemblyIdentity` 的 version |
-| `packaging/make-sfx.ps1` 的 `$Version` 参数默认值 | `0.0.2` | **本地构建**的真源：壳的 VERSIONINFO、输出文件名、buildId 都由它派生 |
-| 本文档的示例命令 | `0.0.2` | 文档，改版本时记得跟着改 |
+| `resources/app.rc` | `0.0.3.0` | exe 的 `FileVersion` / `ProductVersion`（属性对话框「详细信息」页） |
+| `resources/app.manifest` | `0.0.3.0` | `assemblyIdentity` 的 version |
+| `packaging/make-sfx.ps1` 的 `$Version` 参数默认值 | `0.0.3` | **本地构建**的真源：壳的 VERSIONINFO、输出文件名、buildId 都由它派生 |
+| 本文档的示例命令 | `0.0.3` | 文档，改版本时记得跟着改 |
 
-`make-sfx.ps1` 把版本当参数传给 `build-sfx.bat`（`build-sfx.bat 0.0.2`），
+`make-sfx.ps1` 把版本当参数传给 `build-sfx.bat`（`build-sfx.bat 0.0.3`），
 **`.bat` 里没有版本字面量** —— 两处各存一份是必然漂移点，会出现
-「文件名是 0.0.2、内嵌版本资源还是别的号」这种只有右键看属性才发现的错位。
+「文件名是 0.0.3、内嵌版本资源还是别的号」这种只有右键看属性才发现的错位。
 
 > **发布时 tag 是唯一权威，但 `app.rc` 不是流水线能改的。**
 > CI 用 `make-sfx.ps1 -Version <tag 里的版本>` 打包，外壳 exe 的文件名与
@@ -1302,7 +1303,7 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1 -Version 0.1.0
 打成 zip 分发：
 
 ```
-tar.exe -a -c -f dist\package\LingwuToolbox-0.0.2-win64-portable.zip -C dist Release
+tar.exe -a -c -f dist\package\LingwuToolbox-0.0.3-win64-portable.zip -C dist Release
 ```
 
 ### 可选：框架依赖（小包，但要求对方先装运行时）
@@ -1352,7 +1353,7 @@ x64，Windows 10 1809（17763）及以上 / Windows 11。
 pwsh -NoProfile -File .\packaging\make-sfx.ps1
 ```
 
-产出 `dist\package\LingwuToolbox-0.0.2-win64.exe`（约 60.7 MB）。
+产出 `dist\package\LingwuToolbox-0.0.3-win64.exe`（约 60.7 MB）。
 把 `dist\Release\` 的文件按自定义格式嵌成一个 RCDATA 资源，
 双击后释放到 `%LOCALAPPDATA%\LingwuToolbox\portable\<buildId>\` 再启动真程序，壳随即退出。
 
@@ -1369,7 +1370,7 @@ pwsh -NoProfile -File .\packaging\make-sfx.ps1
 
 ### 两种分发件怎么选
 
-| | `LingwuToolbox-0.0.2-win64.exe` | `...-portable.zip` |
+| | `LingwuToolbox-0.0.3-win64.exe` | `...-portable.zip` |
 |---|---|---|
 | 体积 | 约 60.7 MB | 约 22.8 MB |
 | 对方操作 | 双击即用 | 解压后双击 |
