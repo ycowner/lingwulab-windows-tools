@@ -120,6 +120,22 @@ bool LoadSettings(Settings& s) {
     ReadInt(g_iniPath, L"WindowWidth",  s.width);
     ReadInt(g_iniPath, L"WindowHeight", s.height);
 
+    // ---- 导航 ----
+    ReadInt(g_iniPath, L"LastPage", s.lastPage);
+
+    // ---- 托盘指标面板 ----
+    ReadInt(g_iniPath, L"TrayPanelProcessCount", s.trayPanelProcessCount);
+
+    // ---- 动作开关 ----
+    ReadBool(g_iniPath, L"KeepAwake", s.keepAwake);
+    // 【为什么键存在就以它为准，不用新的默认值去覆盖它】
+    // 这是设置层的通用契约：键不存在 → 用默认值；键存在 → 用它。
+    // 「清理屏时锁定输入」的默认值改过一次（关 → 开），
+    // 但已经写进 ini 的旧值**不跟着默认值变** ——
+    // 否则用户每次在设置界面改别的项、存一次盘，
+    // 自己关掉的那个开关就被悄悄打开了。
+    ReadBool(g_iniPath, L"CleanScreenLockInput", s.cleanScreenLockInput);
+
     // 尺寸明显不合理（换分辨率、分辨率被改）就丢弃，让窗口走默认布局。
     // 宁可重新排版，也不要开出一个 0 宽或者比屏幕大 5 倍的窗口。
     if (s.width <= 400 || s.height <= 300) {
@@ -141,6 +157,13 @@ bool LoadSettings(Settings& s) {
     // 手改成 3 或负数时退回「每次询问」：宁可多问一次，也不要给出一个
     // MainWindow 里没有对应分支的值（那会走到 default 分支静默什么都不做）。
     if (s.closeAction < 0 || s.closeAction > 2) s.closeAction = 0;
+    // 页签越界时退回「状态」（Phase 1 第一个有内容的页）。
+    // 注意这里**不判断「哪个页签已实现」** —— 那是导航层的知识。
+    if (s.lastPage < 0 || s.lastPage > 5) s.lastPage = 4;
+    // Top 进程行数上限 10：再多面板就撑破 530 DIP 的高度了。
+    if (s.trayPanelProcessCount < 0 || s.trayPanelProcessCount > 10) {
+        s.trayPanelProcessCount = 5;
+    }
 
     return true;
 }
@@ -163,6 +186,16 @@ void SaveSettings(const Settings& s) {
     WriteInt(g_iniPath, L"WindowTop",    s.top);
     WriteInt(g_iniPath, L"WindowWidth",  s.width);
     WriteInt(g_iniPath, L"WindowHeight", s.height);
+
+    // ---- 导航 ----
+    WriteInt(g_iniPath, L"LastPage", s.lastPage);
+
+    // ---- 托盘指标面板 ----
+    WriteInt(g_iniPath, L"TrayPanelProcessCount", s.trayPanelProcessCount);
+
+    // ---- 动作开关 ----
+    WriteBool(g_iniPath, L"KeepAwake", s.keepAwake);
+    WriteBool(g_iniPath, L"CleanScreenLockInput", s.cleanScreenLockInput);
 
     // ---- 生命周期 ----
     WriteBool(g_iniPath, L"TrayHintShown", s.trayHintShown);

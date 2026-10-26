@@ -43,7 +43,9 @@ namespace LingwuToolbox
                       Int32 sortMode,
                       Int32 intervalMs,
                       Boolean autoStart,
-                      Int32 closeAction);
+                      Int32 closeAction,
+                      Boolean keepAwake,
+                      Boolean cleanScreenLockInput);
 
         // What the user ended up choosing. Only meaningful after the window
         // closes with OK; the main window reads it from its Closed handler.
@@ -64,6 +66,12 @@ namespace LingwuToolbox
         Boolean ResultAutoStart  { get; };
         // 0 = ask every time, 1 = always hide to tray, 2 = always exit.
         Int32   ResultCloseAction { get; };
+        // Keep the display and the system awake (SetThreadExecutionState).
+        // Same switch as the tray panel's "keep awake" button.
+        Boolean ResultKeepAwake { get; };
+        // Lock keyboard and mouse while the clean screen is up (BlockInput).
+        // Off by default: it locks the whole machine, not just this app.
+        Boolean ResultCleanScreenLockInput { get; };
 
         // Let the window really close from now on.
         //

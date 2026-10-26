@@ -20,6 +20,12 @@
 // （那要改 .idl、触发 MIDL 重跑，而且每加一个交互点就要重跑一次）。
 #include "MonitorPage.xaml.h"
 #include "ServicePage.xaml.h"
+// 托盘指标面板。它也是一个 XAML Window，但**按值持有**（不是指针）——
+// 与两个页面同款：cppwinrt 的实现对象靠引用计数活着，值成员的析构
+// 会正确释放引用；指针方案要么裸 new（析构语义不对），
+// 要么包一层 smart_ptr（而 shared_ptr 的 delete 对 WinRT 实现对象
+// 并不是推荐路径）。
+#include "TrayPanel.xaml.h"
 
 // 跨模块共享的类型：ContentDialog 独占闸门、窗口子类用的菜单中转结构。
 #include "shell_types.h"
@@ -49,38 +55,67 @@ struct MainWindow : MainWindowT<MainWindow> {
     MainWindow();
 
 private:
+    // ---- 导航 ----
+    // 当前显示的模块。
+    //
+    // 六个页签在导航模型里一次定死：清理 / 应用 / 优化 / 分析 / 状态 / 服务。
+    // 其中前四个本轮尚未实现，是「规划中」的禁用态占位 ——
+    // 枚举里先占好位置，将来实现了直接接上，不用改导航结构。
+    //
+    // 取值与 settings.ini 的 LastPage 键一一对应（0..5），
+    // 所以 Settings::lastPage 的默认值 4 就是「状态」。
+    //
+    // 【这个枚举必须排在 EnsurePage 前面】
+    // EnsurePage 的形参用的是它 —— C++ 里类型要先声明后使用。
+    enum class Module { Clean = 0, Apps = 1, Optimize = 2, Analyze = 3,
+                       Status = 4, Service = 5 };
+
     // ---- 启动装配 ----
     void ApplyBackdrop();
     void WireEvents();
-    // 创建两个页面并挂进 PageHost。只做一次 —— 页面必须常驻，
-    // 「切走再切回来重建页面」会报废列表容器（ItemsSource 只赋一次的铁律）。
-    void CreatePages();
+    // 确保某个页签对应的页面已经建好并挂进 PageHost。
+    //
+    // 【为什么是惰性构造】
+    // 六个页签在导航模型里一次定死，但页面本体**首次进入时才建**：
+    // 服务页要建一整套服务列表（拉 SCM、读注册表），用户这一轮根本
+    // 没打开过的话，那份内存与初始化开销都是白付。
+    // 页面一旦建好就**永不重建** —— 性能监视页的列表遵守
+    // 「ItemsSource 全生命周期只赋值一次」的铁律，重建页面等于重新赋一次。
+    void EnsurePage(Module m);
     // 装配托盘图标。构造函数末尾调一次。
     void InitTray();
 
-    // ---- 导航 ----
-    // 当前显示的模块。
-    enum class Module { Monitor, Service };
-    // 切换模块。只改两个页面的 Visibility，不重建任何东西。
+    // 切换模块。只改页面的 Visibility，不重建任何东西。
     void ShowModule(Module m);
-    Module currentModule_ = Module::Monitor;
+    Module currentModule_ = Module::Status;
 
-    // 药丸导航的选中态。
+    // 页签主体是否已经建好（惰性构造的产物）。
+    // 所有对页面的调用都要先看这两个标志 —— 未建好的页面里
+    // settings_ 是 nullptr，ServicePage::Shutdown() 会拿它去落盘，直接崩。
+    bool monitorPageReady_ = false;
+    bool servicePageReady_ = false;
+
+    // 导航页签的选中态。
     //
     // 【为什么颜色要现算】
-    // 药丸的填充色必须跟着主题走（深色 / 浅色两套强调色不一样），
-    // 而 ThemeResource 只在 XAML 解析期生效，C++ 侧没有 API 直接取
-    // 「按当前主题解析好的画刷」。所以 XAML 里放了两个 0×0 的隐藏 Border
-    // 探针把画刷解析出来，这里从它们身上读。
+    // 选中态的填充色是**该页自己的主色**（决策轴 A：每页独立主色），
+    // 而主色是 StaticResource —— 只在 XAML 解析期生效。
+    // C++ 侧要按当前页签挑出对应的那一个，所以 XAML 里放了六个 0×0 的
+    // 隐藏探针把画刷解析出来，这里从它们身上读。
     //
     // 至于「未选中」态的文字色：不另取主题画刷，而是把 Button 构造完
     // 之后的默认 Foreground 存下来 —— 那本来就是主题给正文用的那个颜色。
-    void UpdateNavPills();
+    void UpdateNavTabs();
 
     // ---- 生命周期 ----
     // 把窗口显示出来并拿到前台。托盘左键、菜单「显示主界面」、
     // 以及第二份实例的激活消息都走这里。
     void ShowAndActivate();
+    // 托盘左键：弹出 / 收起托盘指标面板。
+    //
+    // 语义是**切换**（面板已显示时再点一次托盘就收起它），
+    // 而不是「每次都弹出来」。防双击由托盘模块那侧做（500 ms 防抖）。
+    void ToggleTrayPanel();
     // 真隐藏到托盘：任务栏不留按钮，只剩托盘一个入口。
     void HideToTray();
     // 真正退出。只由托盘菜单「退出」与关闭确认框的「退出程序」调，
@@ -157,6 +192,19 @@ private:
     // 成员构造早于外壳自己的构造函数体，顺序必须由外壳掌控。
     MonitorPage monitorPage_{};
     ServicePage servicePage_{};
+
+    // 托盘指标面板。托盘左键弹出的那个 360×530 的小窗。
+    //
+    // 【为什么它也是按值持有、且和两个页面一样是成员】
+    // 它必须是一个**独立顶层窗口**（WinUI 3 的 Window 没有 Visibility，
+    // 主窗口里的 Page 没法脱离主窗口单独显示），而只要还有一个 Window
+    // 活着，XAML 框架的消息循环就不会结束 —— 所以退出序列必须连带关掉它。
+    //
+    // 【为什么构造一次就常驻，而不是每次点托盘都新建】
+    // WinUI 3 的 Window 关闭后不可复用；「关掉就 new 一个」实测会线性泄漏
+    // 原生资源（每轮约 36 个句柄 + 1.8 MB 私有内存，无上界）。
+    // 所以是「构造一次 + 隐藏/显示」，每轮零分配。
+    TrayPanel trayPanel_{};
 
     // 关闭确认框。**构造函数里只建一次**，之后永不重建。
     //

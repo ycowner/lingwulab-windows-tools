@@ -60,6 +60,33 @@ TrayCallbacks   g_cb;
 // 提升重试已经试了多少次。
 int             g_promoteTries = 0;
 
+// 左键上次被处理的时间戳。用来把「双击」压成一次。
+//
+// 【为什么需要】托盘左键现在是**切换**语义（面板开了就收回来）。
+// 而一次双击会产生 WM_LBUTTONUP → WM_LBUTTONDBLCLK → WM_LBUTTONUP，
+// 只接 UP 就会切换两次 —— 面板开了又关，等于什么都没发生。
+// 上一版的「唤出主窗口」是幂等的，重复触发无害，所以没这个坑；
+// 改成切换语义之后就必须防抖。
+ULONGLONG       g_lastLeftClick = 0;
+constexpr ULONGLONG kLeftClickDebounceMs = 500;
+
+// 托盘左键：弹出 / 收起指标面板。
+//
+// 没有装 onShowPanel 时退回「显示主窗口」—— 旧调用方与降级路径都还能用。
+void HandleTrayLeftClick() {
+    const ULONGLONG now = GetTickCount64();
+    if (now - g_lastLeftClick < kLeftClickDebounceMs) {
+        LINGWU_TRACE("tray: left click debounced");
+        return;
+    }
+    g_lastLeftClick = now;
+    if (g_cb.onShowPanel) {
+        g_cb.onShowPanel();
+    } else if (g_cb.onShowMain) {
+        g_cb.onShowMain();
+    }
+}
+
 // 提升到可见区成没成。
 // g_promoted       -- 已经提到可见区了（不用再提示用户去 ^ 里找）
 // g_promotionSettled -- 提升这件事已经有结论了（成功或已放弃）
@@ -225,8 +252,13 @@ void RefreshTrayIconAfterPromote() {
 constexpr UINT IDM_TRAY_MAIN     = 0x1001;
 constexpr UINT IDM_TRAY_SETTINGS = 0x1002;
 constexpr UINT IDM_TRAY_EXIT     = 0x1003;
-constexpr UINT IDM_TRAY_MONITOR  = 0x1010;
+constexpr UINT IDM_TRAY_STATUS   = 0x1010;
 constexpr UINT IDM_TRAY_SERVICE  = 0x1011;
+// 规划中的四个页签。菜单里置灰占位，与标题栏导航一一对应。
+constexpr UINT IDM_TRAY_CLEAN    = 0x1020;
+constexpr UINT IDM_TRAY_APPS     = 0x1021;
+constexpr UINT IDM_TRAY_OPTIMIZE = 0x1022;
+constexpr UINT IDM_TRAY_ANALYZE  = 0x1023;
 
 void ShowTrayMenu(HWND owner) {
     HMENU m = CreatePopupMenu();
@@ -242,18 +274,26 @@ void ShowTrayMenu(HWND owner) {
     };
     MenuGuard menuGuard{ m };
 
-    // 当前模块 —— 用来给「性能监视 / 服务管理」打勾。
+    // 当前模块 —— 用来给「状态 / 服务」打勾。
     // 托盘模块不持有这个状态的副本，每次弹菜单前问一次，避免两边不一致。
     const TrayModule active =
-        g_cb.getActiveModule ? g_cb.getActiveModule() : TrayModule::Monitor;
+        g_cb.getActiveModule ? g_cb.getActiveModule() : TrayModule::Status;
 
     // 菜单契约见 tray_icon.h 的 TrayCallbacks 注释。
     AppendMenuW(m, MF_STRING, IDM_TRAY_MAIN, L"显示工具箱");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(m, MF_STRING | (active == TrayModule::Monitor ? MF_CHECKED : 0),
-                IDM_TRAY_MONITOR, L"性能监视");
+    // 尚未实现的四个页签：置灰占位。
+    // 【为什么还要留着】菜单与标题栏的导航长得一样，用户才知道
+    // 「这个功能在规划中」而不是「工具箱里根本没这个功能」。
+    AppendMenuW(m, MF_STRING | MF_GRAYED, IDM_TRAY_CLEAN, L"清理");
+    AppendMenuW(m, MF_STRING | MF_GRAYED, IDM_TRAY_APPS, L"应用");
+    AppendMenuW(m, MF_STRING | MF_GRAYED, IDM_TRAY_OPTIMIZE, L"优化");
+    AppendMenuW(m, MF_STRING | MF_GRAYED, IDM_TRAY_ANALYZE, L"分析");
+    AppendMenuW(m, MF_STRING | (active == TrayModule::Status ? MF_CHECKED : 0),
+                IDM_TRAY_STATUS, L"状态");
     AppendMenuW(m, MF_STRING | (active == TrayModule::Service ? MF_CHECKED : 0),
-                IDM_TRAY_SERVICE, L"服务管理");
+                IDM_TRAY_SERVICE, L"服务");
+    AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_TRAY_SETTINGS, L"设置…");
     AppendMenuW(m, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(m, MF_STRING, IDM_TRAY_EXIT, L"退出");
@@ -288,9 +328,22 @@ void ShowTrayMenu(HWND owner) {
                 if (g_cb.onShowMain) g_cb.onShowMain();
             });
             break;
-        case IDM_TRAY_MONITOR:
-            platform::GuardCallback("tray.onSelectModule.monitor", [&]{
-                if (g_cb.onSelectModule) g_cb.onSelectModule(TrayModule::Monitor);
+        case IDM_TRAY_CLEAN:
+        case IDM_TRAY_APPS:
+        case IDM_TRAY_OPTIMIZE:
+        case IDM_TRAY_ANALYZE:
+            // 置灰项理论上点不出命令（MF_GRAYED 的项不派发 WM_COMMAND），
+            // 这里仍然兜一层：万一日后有人忘了加 MF_GRAYED，
+            // 点「规划中」的页签也不该把程序带到别的页面去。
+            platform::GuardCallback("tray.onSelectModule.planned", [&]{
+                if (g_cb.onSelectModule) {
+                    g_cb.onSelectModule(static_cast<TrayModule>(cmd - 0x1020));
+                }
+            });
+            break;
+        case IDM_TRAY_STATUS:
+            platform::GuardCallback("tray.onSelectModule.status", [&]{
+                if (g_cb.onSelectModule) g_cb.onSelectModule(TrayModule::Status);
             });
             break;
         case IDM_TRAY_SERVICE:
@@ -387,14 +440,14 @@ LRESULT CALLBACK TrayHostProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (code == WM_RBUTTONUP || code == WM_CONTEXTMENU) {
                     ShowTrayMenu(hwnd);
                 } else if (g_version >= NOTIFYICON_VERSION_4) {
-                    // 左键 / 回车：把主窗口叫出来。按协商到的版本分流，
+                    // 左键 / 回车：弹出指标面板。按协商到的版本分流，
                     // 见函数上方注释。
                     if (code == NIN_SELECT || code == NIN_KEYSELECT) {
-                        if (g_cb.onShowMain) g_cb.onShowMain();
+                        HandleTrayLeftClick();
                     }
                 } else {
                     if (code == WM_LBUTTONUP || code == WM_LBUTTONDBLCLK) {
-                        if (g_cb.onShowMain) g_cb.onShowMain();
+                        HandleTrayLeftClick();
                     }
                 }
             });
@@ -545,6 +598,37 @@ void ShutdownTrayIcon() {
 }
 
 bool TrayIconAdded() { return g_added; }
+
+bool TrayIconRect(RECT* out) {
+    if (!out) return false;
+    if (!g_added || !g_host || !IsWindow(g_host)) return false;
+
+    // 【为什么动态解析而不是直接调用】
+    // Shell_NotifyIconGetRect 是 Windows 10 1803（build 17134）才加的 API。
+    // 直接静态调用会生成一条对 shell32.dll 的**导入引用** ——
+    // 在更老的系统上，进程根本起不来（加载器找不到这个导出符号），
+    // 症状是「程序双击没反应」，而不是「托盘位置算不准」。
+    // 动态解析就没有这个问题：取不到就返回 false，调用方走兜底。
+    using GetRectFn = HRESULT (WINAPI*)(const NOTIFYICONIDENTIFIER*, RECT*);
+    static GetRectFn fn = []() -> GetRectFn {
+        HMODULE shell = ::GetModuleHandleW(L"shell32.dll");
+        if (!shell) shell = ::LoadLibraryW(L"shell32.dll");
+        if (!shell) return nullptr;
+        return reinterpret_cast<GetRectFn>(
+            reinterpret_cast<void*>(::GetProcAddress(shell, "Shell_NotifyIconGetRect")));
+    }();
+    if (!fn) return false;
+
+    NOTIFYICONIDENTIFIER id{};
+    id.cbSize = sizeof(NOTIFYICONIDENTIFIER);
+    id.hWnd  = g_host;
+    id.uID   = kTrayUid;
+
+    RECT r{};
+    if (FAILED(fn(&id, &r))) return false;
+    *out = r;
+    return true;
+}
 
 void MaybeShowTrayHint() {
     // 提升到可见区这件事还没出结论之前不提示 ——

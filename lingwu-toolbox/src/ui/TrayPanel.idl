@@ -1,0 +1,33 @@
+// TrayPanel.idl - C++/WinRT component declaration.
+//
+// IMPORTANT: this file MUST stay pure ASCII.
+// MIDL reads source files using the system ANSI code page (936 on zh-CN),
+// not UTF-8. Chinese comments here raise C4819 ("the file contains a character
+// that cannot be represented in the current code page"), and this project
+// builds with /WX. Same class of trap as build.bat, the .ps1 scripts and
+// SettingsWindow.idl. Keep the Chinese text in the .xaml / .cpp files only.
+//
+// The runtimeclass name and namespace must match both the XAML x:Class
+// attribute and $(RootNamespace) in LingwuToolbox.vcxproj, or the XAML
+// compiler fails with WMC1002.
+//
+// Why a separate top-level Window instead of a page inside MainWindow:
+//   * a tray panel must be able to appear while the main window is hidden
+//     to the tray, and it must not steal focus when it appears;
+//   * WinUI 3's Window has no Visibility property, so a page hosted by the
+//     main window cannot be shown independently of it;
+//   * a closed WinUI 3 Window cannot be reused, so this window is built
+//     exactly once and afterwards only hidden/shown.
+//
+// The public surface here is intentionally tiny. Everything the panel needs
+// (a snapshot to draw, and what to do when the user presses a button) is
+// injected by MainWindow through plain C++ callbacks on the implementation
+// type, so none of it has to become public WinRT API.
+namespace LingwuToolbox
+{
+    [default_interface]
+    runtimeclass TrayPanel : Microsoft.UI.Xaml.Window
+    {
+        TrayPanel();
+    }
+}

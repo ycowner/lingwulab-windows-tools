@@ -49,6 +49,46 @@ struct Settings {
     int width = 0;
     int height = 0;
 
+    // ---- 导航（外壳层）----
+    // 上次停留的页签，取值与外壳的 Module 枚举一一对应（0..5）。
+    //
+    // 【为什么收敛只管到 0..5，不管「哪个页签能用」】
+    // 「哪些页签已实现」是导航层的知识，settings 是纯数据层，不该知道。
+    // 所以这里只做范围收敛；外壳拿到一个尚未实现的页签时自行退回「状态」。
+    //
+    // 【什么时候写回 ini】
+    // 只在退出时写一次（由外壳的退出路径负责），不是每次切页都写 ——
+    // 切页是高频动作，而 ini 写入是同步磁盘 IO。
+    int lastPage = 4;
+
+    // ---- 托盘指标面板 ----
+    // 面板里「Top 进程」显示几行。0 = 不显示这一段。
+    int trayPanelProcessCount = 5;
+
+    // ---- 动作开关状态（跨重启保持）----
+    //
+    // 「保持常亮」= SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED |
+    // ES_SYSTEM_REQUIRED)。它是**动作**而不是「状态」，但用户按下去之后
+    // 期望它一直是开的，所以要落 ini。
+    bool keepAwake = false;
+
+    // 「清理屏幕」是否锁定输入（BlockInput）。
+    //
+    // 【为什么默认开】
+    // 清理屏的用途就是「挡住误触」—— 演示、投屏、录屏时手会不自觉地
+    // 碰到键盘鼠标把当前窗口切走。不锁输入的话，清理屏一半的时间
+    // 是在跟误触打架，那这个功能等于没做。
+    //
+    // 【为什么仍然留成可关的开关】
+    // BlockInput 会把整台机器的键鼠输入锁住（只有调用它的那个线程不受影响），
+    // 对某些场景（需要边清理屏边操作别的程序）反而是麻烦。
+    // 「默认开 + 可随时关掉」比「默认关 + 每次都要记得去开」更符合这个功能的本意。
+    //
+    // 【退出路径只有一条】
+    // 锁上之后唯一的出口是 ESC（见 TrayPanel 的 EnterCleanScreen / ExitCleanScreen），
+    // 进程被杀也会由系统释放锁。这两条路径都必须可靠，否则等于把用户的电脑锁死。
+    bool cleanScreenLockInput = true;
+
     // ---- 生命周期 ----
     // autoStart 不落 ini —— 注册表才是唯一事实源，见 core/monitor/autostart.cpp。
     bool autoStart     = false;

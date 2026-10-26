@@ -25,17 +25,52 @@
     Title="零物工具箱">
 
     <Grid x:Name="RootGrid" RowDefinitions="Auto,*">
+        <Grid.Resources>
+            <!--
+              导航页签的统一样式。
+
+              【为什么放在 Grid.Resources 而不是 Window.Resources】
+              WinUI 3 的 Window **没有** Resources 属性（XAML 编译器直接报
+              WMC0011 Unknown member 'Resources' on element 'Window'）。
+              Grid 有，而页签按钮就在这张 Grid 的子树里，
+              StaticResource 会沿可视树往上找到它。
+
+              【为什么不用现成的 SelectorBar】
+              SelectorBar 的选中态是一条小竖条下划线（WinUI 主题里
+              SelectorBarItemPill 的 Height 只有 3），不是整块填充。
+              用户 2026-10-23 选的就是「整块填充的药丸」这一列，
+              所以这里自绘：Border 负责圆角与填充，Button 负责点击。
+
+              【为什么 Background 是 Transparent】
+              填充画在 Border 上；Button 保持透明才不会盖住 Border 的底色。
+              它的 Padding 决定页签里文字左右的留白。
+
+              【为什么 FontSize 固定 13 而不是用主题字号】
+              导航容器整条只有 36 DIP 高，字号必须跟着容器走；
+              主题字号在「文本缩放」设置下会变大会撑破容器。
+            -->
+            <Style x:Key="NavTabButton" TargetType="Button">
+                <Setter Property="Background" Value="Transparent" />
+                <Setter Property="BorderThickness" Value="0" />
+                <Setter Property="Padding" Value="13,0,13,0" />
+                <Setter Property="MinHeight" Value="28" />
+                <Setter Property="FontSize" Value="13" />
+                <Setter Property="CornerRadius" Value="14" />
+                <Setter Property="HorizontalContentAlignment" Value="Center" />
+                <Setter Property="VerticalContentAlignment" Value="Center" />
+            </Style>
+        </Grid.Resources>
 
         <!-- ============================================================
-             主题画刷探针
+             画刷探针
 
              【为什么需要它】
-             导航药丸的「选中」态要用强调色填充 + 反色文字。这两个画刷必须
-             **跟着主题走**（深色 / 浅色两套），所以不能用写死的 RGB。
-             而 ThemeResource 只在 XAML 解析期生效，C++ 侧没有 API 能直接
-             拿到「按当前主题解析好的画刷」。
-             于是这里放两个 0×0 的隐藏 Border，让 XAML 把 ThemeResource
-             解析成具体画刷，C++ 再从 Border.Background 读出来用。
+             导航的「选中」态要填充页签主色 + 反色文字。这两个画刷得由
+             C++ 在切页时写回 Border/Button，而 ThemeResource 与
+             StaticResource 都只在 XAML 解析期生效，C++ 侧没有 API 能直接
+             拿到「按当前主题 / 按资源字典解析好的画刷」。
+             于是这里放 0×0 的隐藏 Border，让 XAML 先把画刷解析出来，
+             C++ 再从 Border.Background 读出来用。
 
              【为什么不写成 ResourceDictionary 里的资源再 Lookup】
              ResourceDictionary 里只能放「键 → 画刷」的静态映射，而主题画刷
@@ -43,10 +78,39 @@
              而 SolidColorBrush 又没有可用的 Color 形态 token
              （AccentFillColorDefault 这个 Color token 在 WinUI 里不存在）。
              探针是这里唯一既保持主题跟随、又能拿到画刷的干净做法。
+
+             【为什么主色要六个探针而不是一个】
+             决策轴 A 定的是「每页独立主色」，六个页签各有一个色；
+             C++ 侧要按当前页签挑出对应的那一个，所以每个都得能单独取。
+             反正探针是 0×0 的隐藏元素，多几个不占布局也不占内存。
              ============================================================ -->
-        <Border x:Name="AccentBrushProbe"
+        <Border x:Name="AccentCleanProbe"
                 Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
-                Background="{ThemeResource AccentFillColorDefaultBrush}" />
+                Background="{StaticResource AccentClean}" />
+        <Border x:Name="AccentAppsProbe"
+                Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
+                Background="{StaticResource AccentApps}" />
+        <Border x:Name="AccentOptimizeProbe"
+                Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
+                Background="{StaticResource AccentOptimize}" />
+        <Border x:Name="AccentAnalyzeProbe"
+                Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
+                Background="{StaticResource AccentAnalyze}" />
+        <Border x:Name="AccentStatusProbe"
+                Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
+                Background="{StaticResource AccentStatus}" />
+        <Border x:Name="AccentServiceProbe"
+                Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
+                Background="{StaticResource AccentService}" />
+        <!-- 反色文字（页签被选中时写在主色上的字）。
+             【为什么不是写死白色】
+             Gate 0 拍板的对照图里，选中药丸上的字就是**深色**压在主色上
+             （demo 的 CSS 是深色的字配主色背景）。
+             而且按 WCAG 算，深色字在这六个中调主色上的对比度**更高**：
+             状态绿 #4E8529 上深色字 4.70:1 / 白字 4.46:1，
+             服务青 #278C8C 上深色字 5.21:1 / 白字 3.88:1（白字不达标）。
+             所以这里用主题的「强调色上的文字」画刷，由主题决定深浅，
+             而不是钉死一个颜色。 -->
         <Border x:Name="OnAccentBrushProbe"
                 Grid.Row="0" Width="0" Height="0" Visibility="Collapsed"
                 Background="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
@@ -74,40 +138,134 @@
                                Style="{ThemeResource BodyStrongTextBlockStyle}" />
                 </StackPanel>
 
-                <!-- 模块导航：药丸分段。
-                     选中项整块填充强调色、文字反白；未选中项透明底 + 普通文字。
-                     位置在标题栏正中。
+                <!-- 模块导航：Mole 式圆角容器 + 圆形矢量星球 logo + 6 个页签。
 
-                     【为什么是 Border 包 Button，而不是现成的 SelectorBar】
-                     SelectorBar 的选中态是一条小竖条下划线（WinUI 主题里
-                     SelectorBarItemPill 的 Height 只有 3），不是整块填充。
-                     用户 2026-10-23 在四选一对照图里选的就是「药丸」这一列，
-                     所以这里自绘：Border 负责圆角与填充，Button 负责点击。
+                     【整体形态】
+                     一个高 36 DIP 的圆角胶囊容器，最左端是 28×28 的圆形 logo，
+                     后面横排六个页签：清理 / 应用 / 优化 / 分析 / 状态 / 服务。
+                     当前页签整块填充**该页自己的主色**、文字反白；
+                     未选中的页签透明底 + 普通文字色；
+                     尚未实现的前四个页签是禁用态（主题自动把文字调暗），
+                     鼠标悬停给一行「规划中」的说明。
 
-                     【为什么 Button 的 Background 是 Transparent】
-                     填充画在 Border 上；Button 保持透明才不会盖住 Border 的底色。
-                     它的 Padding 决定药丸里文字左右的留白。 -->
-                <StackPanel x:Name="NavPills"
-                            Grid.Column="1"
-                            Orientation="Horizontal"
-                            Spacing="4"
-                            HorizontalAlignment="Center"
-                            VerticalAlignment="Center">
-                    <Border x:Name="NavMonitorPill" CornerRadius="14" Background="Transparent">
-                        <Button x:Name="NavMonitorButton"
-                                Content="性能监视"
-                                Background="Transparent"
-                                BorderThickness="0"
-                                Padding="18,5,18,5" />
-                    </Border>
-                    <Border x:Name="NavServicePill" CornerRadius="14" Background="Transparent">
-                        <Button x:Name="NavServiceButton"
-                                Content="服务管理"
-                                Background="Transparent"
-                                BorderThickness="0"
-                                Padding="18,5,18,5" />
-                    </Border>
-                </StackPanel>
+                     【为什么 logo 放在容器里而不是标题栏最左】
+                     那是「零物工具箱」那个图标的位置（已经有一个 FontIcon 了）。
+                     圆形星球 logo 是**导航组自己的标识** —— 它标的是
+                     「这排东西是一组页签」，跟应用图标不是一回事。
+                     两者挤在标题栏左端会互相干扰。
+
+                     【为什么 logo 是自绘矢量而不是图片资源】
+                     不引第三方素材、不打包二进制资源，也不用 emoji。
+                     全部用 Ellipse + Path 画出来，任何缩放比例下都是清晰的。
+
+                     【容器的底色为什么用「主文字色 @ 6%」】
+                     主题画刷键名不能靠猜 —— 写错一个键名，InitializeComponent
+                     就会以 0x802B000A 抛「找不到资源」，症状是「窗口一个都
+                     建不出来、进程活着、不崩、不写日志」。
+                     而「主文字色」是本工程已在用的、确认存在的键；
+                     深色主题下它近白（6% 白叠在深底上 = 微微发亮的容器），
+                     浅色主题下它近黑（6% 黑叠在浅底上 = 微微发灰的容器），
+                     两种主题都得到「比背景略深一点」的容器感，且零风险。 -->
+                <Border x:Name="NavContainer"
+                        Grid.Column="1"
+                        Height="36"
+                        CornerRadius="18"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
+                    <Grid>
+                        <!-- 底色铺满整个圆角矩形（所以放在 Border 内部而不是用 Padding，
+                             Padding 会让底色缩进一圈，圆角就露出来了）。 -->
+                        <Border Background="{ThemeResource TextFillColorPrimaryBrush}"
+                                Opacity="0.06"
+                                CornerRadius="18" />
+
+                        <StackPanel Orientation="Horizontal"
+                                    Spacing="0"
+                                    VerticalAlignment="Center"
+                                    Margin="6,0,6,0">
+
+                            <!-- 圆形矢量星球 logo：中央实心球 + 倾斜椭圆轨道环 + 一颗卫星点。
+                                 轨道与卫星放在同一个带旋转的 Grid 里，
+                                 旋转时两者一起转，卫星才始终落在轨道上。
+
+                                 【为什么轨道是 22×8 这么扁、球只有 9】
+                                 第一版把轨道画成 18×9、球画成 7×7 —— 轨道几乎整个被球盖住，
+                                 只剩右下角一截若有若无的弧线，压根看不出是「星球」。
+                                 现在轨道左右两端（x=3 / x=25）远远伸出球的范围（9.5~18.5），
+                                 「一个球 + 一道穿过去的环」才成立。
+
+                                 【为什么卫星要放在轨道右端】
+                                 放在轨道正上方的话，那个点正好落在球的矩形范围内，
+                                 而球是后画的、会把它盖住 —— 卫星就永远看不见。
+                                 右端 (25,14) 在球之外，必定可见。 -->
+                            <Grid x:Name="NavLogo"
+                                  Width="28" Height="28"
+                                  Margin="2,0,8,0"
+                                  VerticalAlignment="Center">
+                                <Ellipse Width="24" Height="24"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center"
+                                         Fill="{ThemeResource TextFillColorPrimaryBrush}"
+                                         Opacity="0.10" />
+                                <Grid RenderTransformOrigin="0.5,0.5">
+                                    <Grid.RenderTransform>
+                                        <RotateTransform Angle="-20" />
+                                    </Grid.RenderTransform>
+                                    <!-- 椭圆轨道。Path 的几何外框（22×8）与元素尺寸一致，
+                                         所以 Uniform 拉伸的缩放比正好是 1，几何中心落在元素中心。 -->
+                                    <Path Data="M 3,14 A 11,4 0 1,0 25,14 A 11,4 0 1,0 3,14 Z"
+                                          Width="22" Height="8"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Stroke="{ThemeResource TextFillColorPrimaryBrush}"
+                                          StrokeThickness="1.3"
+                                          Opacity="0.75" />
+                                    <!-- 卫星点：未旋转时落在轨道右端 (25,14)，
+                                         跟着上面那个 Grid 一起转。 -->
+                                    <Ellipse Width="2.6" Height="2.6"
+                                             HorizontalAlignment="Left" VerticalAlignment="Top"
+                                             Margin="23.7,12.7,0,0"
+                                             Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                                </Grid>
+                                <Ellipse Width="9" Height="9"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center"
+                                         Fill="{ThemeResource TextFillColorPrimaryBrush}" />
+                            </Grid>
+
+                            <!-- 六个页签。前四个本轮是「规划中」的禁用态占位。 -->
+                            <Border x:Name="NavCleanPill" CornerRadius="14" Background="Transparent">
+                                <Button x:Name="NavCleanButton" Content="清理"
+                                        Style="{StaticResource NavTabButton}"
+                                        IsEnabled="False"
+                                        ToolTipService.ToolTip="规划中" />
+                            </Border>
+                            <Border x:Name="NavAppsPill" CornerRadius="14" Background="Transparent">
+                                <Button x:Name="NavAppsButton" Content="应用"
+                                        Style="{StaticResource NavTabButton}"
+                                        IsEnabled="False"
+                                        ToolTipService.ToolTip="规划中" />
+                            </Border>
+                            <Border x:Name="NavOptimizePill" CornerRadius="14" Background="Transparent">
+                                <Button x:Name="NavOptimizeButton" Content="优化"
+                                        Style="{StaticResource NavTabButton}"
+                                        IsEnabled="False"
+                                        ToolTipService.ToolTip="规划中" />
+                            </Border>
+                            <Border x:Name="NavAnalyzePill" CornerRadius="14" Background="Transparent">
+                                <Button x:Name="NavAnalyzeButton" Content="分析"
+                                        Style="{StaticResource NavTabButton}"
+                                        IsEnabled="False"
+                                        ToolTipService.ToolTip="规划中" />
+                            </Border>
+                            <Border x:Name="NavStatusPill" CornerRadius="14" Background="Transparent">
+                                <Button x:Name="NavStatusButton" Content="状态"
+                                        Style="{StaticResource NavTabButton}" />
+                            </Border>
+                            <Border x:Name="NavServicePill" CornerRadius="14" Background="Transparent">
+                                <Button x:Name="NavServiceButton" Content="服务"
+                                        Style="{StaticResource NavTabButton}" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                </Border>
 
                 <!-- 右侧留空：系统按钮（最小化/最大化/关闭）压在这一带。 -->
                 <Grid Grid.Column="2" Width="140" />

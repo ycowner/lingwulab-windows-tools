@@ -8,10 +8,14 @@
 
 #include "selftest.h"
 
+#include "core/monitor/appicon.h"
 #include "core/monitor/appnames.h"
 #include "core/monitor/autostart.h"
+#include "core/monitor/health.h"
 #include "core/monitor/metrics.h"
 #include "core/monitor/sampler.h"
+#include "core/monitor/sparkline.h"
+#include "core/monitor/system_metrics.h"
 #include "core/monitor/terminate.h"
 #include "core/monitor/top10.h"
 #include "core/settings.h"
@@ -222,6 +226,9 @@ int RunSelfTest(int ticks) {
     Line(W(L"  IntervalMs    = %d", st.intervalMs));
     Line(W(L"  TrayHintShown = %s", st.trayHintShown ? L"1" : L"0"));
     Line(W(L"  CloseAction   = %d", st.closeAction));
+    Line(W(L"  LastPage      = %d", st.lastPage));
+    Line(W(L"  面板Top进程行 = %d", st.trayPanelProcessCount));
+    Line(W(L"  KeepAwake     = %d", st.keepAwake ? 1 : 0));
     Check(st.sortMode >= 0 && st.sortMode <= 4, L"sortMode 收敛在 0..4");
     Check(st.intervalMs >= 250 && st.intervalMs <= 10000, L"intervalMs 收敛在 250..10000");
 
@@ -236,6 +243,12 @@ int RunSelfTest(int ticks) {
         probe.aggregate   = !st.aggregate;
         probe.sortMode    = (st.sortMode + 2) % 5;
         probe.intervalMs  = 1500;
+        // 新增的键也要一起往返 —— 少写一个键，用户就会发现
+        // 「重启之后这个设置又变回去了」，而读写两边的代码看上去都没错。
+        probe.lastPage               = (st.lastPage + 1) % 6;
+        probe.trayPanelProcessCount  = 7;
+        probe.keepAwake              = !st.keepAwake;
+        probe.cleanScreenLockInput   = !st.cleanScreenLockInput;
         core::SaveSettings(probe);
 
         core::Settings back;
@@ -244,6 +257,23 @@ int RunSelfTest(int ticks) {
               back.sortMode  == probe.sortMode  &&
               back.intervalMs == probe.intervalMs,
               L"SaveSettings → LoadSettings 往返一致");
+        Check(back.lastPage == probe.lastPage &&
+              back.trayPanelProcessCount == probe.trayPanelProcessCount &&
+              back.keepAwake == probe.keepAwake &&
+              back.cleanScreenLockInput == probe.cleanScreenLockInput,
+              L"新增设置项（页签/面板行数/常亮/输入锁定）往返一致");
+
+        // 收敛：手改成越界值必须被拉回默认，不能带着非法值进运行时。
+        {
+            core::Settings bad = probe;
+            bad.lastPage = 99;
+            bad.trayPanelProcessCount = 999;
+            core::SaveSettings(bad);
+            core::Settings b2;
+            core::LoadSettings(b2);
+            Check(b2.lastPage == 4 && b2.trayPanelProcessCount == 5,
+                  L"越界的页签/面板行数被收敛回默认值");
+        }
 
         if (hadIni) {
             ::CopyFileW(bak.c_str(), ini.c_str(), FALSE);
@@ -380,11 +410,238 @@ int RunSelfTest(int ticks) {
         Check(!lastSnap.apps.empty(),  at + L"聚合出行");
         Check(PidsConsistent(lastSnap), at + L"pid 扁平表与各行 pidStart/pidCount 自洽");
         Check(lastSnap.coreCount >= 1, at + L"逻辑核数 >= 1");
+        Check(lastSnap.memory.totalBytes > 0, at + L"物理内存总量 > 0");
+        Check(lastSnap.memory.usedPercent >= 0.0 && lastSnap.memory.usedPercent <= 100.0,
+              at + L"物理内存占用率落在 0..100");
+        Check(lastSnap.healthValid &&
+              lastSnap.healthScore >= 0 && lastSnap.healthScore <= 100,
+              at + L"健康分有效且落在 0..100");
 
         if (t == ticks) DumpTop(lastSnap, 15);
     }
 
     sampler.Stop();
+
+    // ---------------- 系统级指标 + 健康分 ----------------
+    //
+    // 【为什么单独测健康分的算法边界】
+    // 健康分是纯函数，不测边界就等于没测：三个因子的权重、阈值、
+    // 以及「磁盘取不到时权重归一」这条分支，任何一处写反都不会报错，
+    // 只会让用户看到一个说不通的分数。
+    Line(L"");
+    Line(L"[4b] 系统级指标（磁盘 / 电池 / 内存 / 主机信息）与健康分");
+    {
+        const DiskSpaceInfo& ds = lastSnap.diskSpace;
+        Line(W(L"  磁盘 %ls：总量 %ls · 剩余 %ls",
+               ds.volume.empty() ? L"(未知盘)" : ds.volume.c_str(),
+               FormatBytes(ds.totalBytes).c_str(),
+               FormatBytes(ds.freeBytes).c_str()));
+        Check(!ds.valid || (ds.totalBytes > 0 && ds.freeBytes <= ds.totalBytes),
+              L"磁盘剩余自洽（总量 > 0 且剩余 <= 总量）");
+
+        const DiskActivityInfo& da = lastSnap.diskActivity;
+        wchar_t busy[32] = { 0 };
+        swprintf_s(busy, L"%.0f%%", da.percentBusy);
+        Line(W(L"  磁盘活动：%ls · 读 %ls/s · 写 %ls/s",
+               da.valid ? busy : L"(读不到，需要管理员权限)",
+               FormatBytes(da.readBytesPerSec).c_str(),
+               FormatBytes(da.writeBytesPerSec).c_str()));
+        Check(!da.valid || (da.percentBusy >= 0.0 && da.percentBusy <= 100.0),
+              L"磁盘活动率落在 0..100（多队列盘已钳过）");
+
+        const BatteryInfo& bat = lastSnap.battery;
+        wchar_t batPct[32] = { 0 };
+        swprintf_s(batPct, L"%d%%", bat.percent);
+        Line(W(L"  电池：%ls",
+               bat.present ? batPct : L"(本机无电池 —— 该磁贴整块不显示)"));
+        Check(!bat.present || (bat.percent >= 0 && bat.percent <= 100),
+              L"电池电量落在 0..100");
+
+        Line(W(L"  物理内存：已用 %ls / 总量 %ls（占用 %.0f%%）",
+               FormatBytes(lastSnap.memory.totalBytes - lastSnap.memory.availableBytes).c_str(),
+               FormatBytes(lastSnap.memory.totalBytes).c_str(),
+               lastSnap.memory.usedPercent));
+
+        Line(W(L"  CPU：%ls", lastSnap.host.cpuName.empty() ? L"(读不到)"
+                                                          : lastSnap.host.cpuName.c_str()));
+        Line(W(L"  系统：%ls · 已运行 %ls",
+               lastSnap.host.osName.empty() ? L"(未知)" : lastSnap.host.osName.c_str(),
+               FormatUptime(lastSnap.host.uptimeSeconds).c_str()));
+        Check(lastSnap.host.uptimeSeconds > 0, L"运行时长 > 0");
+
+        Line(W(L"  健康分：%d（%ls）", lastSnap.healthScore, lastSnap.healthGrade.c_str()));
+
+        const HealthResult perfect = ComputeHealth(0.0, 0.0, 100.0);
+        const HealthResult worst   = ComputeHealth(100.0, 100.0, 0.0);
+        const HealthResult noDisk  = ComputeHealth(50.0, 50.0, -1.0);
+        const HealthResult bad     = ComputeHealth(-1.0, 50.0, 50.0);
+        Check(perfect.valid && perfect.score == 100 && perfect.grade == L"优秀",
+              L"健康分：理想读数 → 100 优秀");
+        Check(worst.valid && worst.score == 0 && worst.grade == L"较差",
+              L"健康分：最差读数 → 0 较差");
+        Check(noDisk.valid,
+              L"健康分：磁盘剩余取不到时仍有效（权重归一，不作废整项）");
+        Check(!bad.valid,
+              L"健康分：CPU 读数非法时整项无效");
+    }
+
+    // ---------------- 趋势序列 ----------------
+    //
+    // 【为什么单独测环形缓冲】
+    // 折线画错了（顺序反了、丢的是最新而不是最旧、窗口不滚动）时，
+    // 界面上只会看到「一条形状有点怪的线」—— 不会抛异常、不会崩、不会有任何报错。
+    // 唯一能钉住它的地方就是这里：环形的语义必须逐条验。
+    Line(L"");
+    Line(L"[4c] 趋势序列（磁贴折线的数据源）");
+    {
+        // ① 采样期间确实攒下了点。
+        // 用 >= 而不是 ==：采样线程可能比自检循环跑得快（自检每轮要等一个脏标志，
+        // 采样线程是固定 1 秒一拍），读到的那一帧可能已经多攒了几点。
+        // 真正要钉的是「攒下了」，不是「正好一个不多一个不少」。
+        const size_t cpuPts = lastSnap.history.cpu.Size();
+        Check(cpuPts >= static_cast<size_t>(ticks),
+              W(L"采样 %d 周期后 CPU 序列至少攒下 %zu 个点", ticks, cpuPts));
+        Check(lastSnap.history.mem.Size() == cpuPts &&
+              lastSnap.history.disk.Size() == cpuPts &&
+              lastSnap.history.health.Size() == cpuPts,
+              L"各条序列点数一致");
+
+        // ② 环形语义：塞超过容量 → 只留最近的一批，最旧的被覆盖。
+        Series s;
+        for (int i = 0; i < 100; ++i) s.Push(static_cast<double>(i));
+        Check(s.Size() == Series::Capacity(),
+              W(L"环形缓冲写满后不再增长（容量 %zu，实测 %zu）",
+                Series::Capacity(), s.Size()));
+        Check(s.Last() == 99.0, L"环形缓冲的最新值 = 最后一次写入的 99");
+        Check(s.Min() == 36.0, L"环形缓冲的最小值 = 窗口内最旧的 36");
+        Check(s.Max() == 99.0, L"环形缓冲的最大值 = 99");
+        Check(s.Range() == 63.0, L"极差 = 99 - 36 = 63");
+
+        // ③ 拷贝顺序：最旧 → 最新；容量不够时丢最旧、留最新。
+        double buf[16] = { 0 };
+        const size_t n = s.CopyOldestFirst(buf, 16);
+        bool ordered = (n == 16);
+        for (size_t i = 1; ordered && i < n; ++i) ordered = (buf[i] > buf[i - 1]);
+        Check(ordered && buf[0] == 84.0 && buf[n - 1] == 99.0,
+              L"拷贝出来是最旧的 84 → 最新的 99，且严格递增");
+        Check(s.CopyOldestFirst(nullptr, 16) == 0, L"拷贝到空指针返回 0，不崩");
+    }
+
+    // ---------------- 进程 exe 图标 ----------------
+    //
+    // 【为什么测图标】
+    // 图标提取失败时不会抛异常、不会崩，只会让图标位空着 ——
+    // 这正是最容易漏掉的一类问题，所以要钉「取得到 / 取不到 / 缓存生效」三件事。
+    // 不钉具体像素 —— 像素在不同 Windows 版本上不一样，钉了就是假失败。
+    Line(L"");
+    Line(L"[4d] 进程 exe 图标");
+    {
+        // 前面 DumpTop 用掉了本帧的路径解析预算，这里重置一次，
+        // 模拟「新一帧」再问路径 —— 否则会因预算耗尽而误判成「路径解析不了」。
+        AppNamesBeginFrame();
+
+        Check(GetIconForPath(L"") == nullptr, L"空路径返回空图标句柄");
+
+        // 用系统目录下的 cmd.exe —— 路径在任何 Win11 上都成立，且它一定有图标资源。
+        wchar_t sysDir[MAX_PATH] = { 0 };
+        const UINT n = GetSystemDirectoryW(sysDir, MAX_PATH);
+        const std::wstring cmdPath =
+            (n > 0 && n < MAX_PATH) ? std::wstring(sysDir) + L"\\cmd.exe" : std::wstring();
+        const HICON h1 = GetIconForPath(cmdPath);
+        Check(!cmdPath.empty() && h1 != nullptr, L"cmd.exe 能取到图标");
+        Check(GetIconForPath(cmdPath) == h1, L"同一路径二次取图标命中缓存（同一句柄）");
+
+        // 自身 exe：路径走 appnames 那份 pid 缓存解析
+        const DWORD self = ::GetCurrentProcessId();
+        const std::wstring selfPath = ProcessImagePath(self, 0);
+        Check(!selfPath.empty(), L"能解析自身 exe 路径");
+        Check(GetAppIcon(self, 0, L"self.exe") != nullptr, L"自身 exe 能取到图标");
+
+        // 不存在的路径必须返回空，不能返回野句柄
+        Check(GetIconForPath(L"Z:\\__lingwu_no_such_exe__.exe") == nullptr,
+              L"不存在的路径返回空图标句柄");
+
+        ReleaseAppIcons();
+        Line(L"  （图标句柄已释放）");
+    }
+
+    // ---------------- 折线几何 ----------------
+    //
+    // 【为什么测几何】
+    // 折线画错时不会崩、不会报错 —— 屏幕上只是「一条形状有点怪的线」。
+    // 顺序反了（最新在左）、丢的是最新而不是最旧、
+    // 纵轴把平坦的噪声放大成锯齿 —— 这三种错在界面上都只能靠肉眼发现，
+    // 所以必须在这里逐条钉死。
+    Line(L"");
+    Line(L"[4e] 折线几何（磁贴 mini 折线）");
+    {
+        // ① 点数不足 2 个时画一条基线（规格：plan.md §3.7「失败与恢复语义」
+        //    —— 「sparkline 点数不足 → 只画已有的点；点数 < 2 时画一条基线」）。
+        //    【为什么要基线而不是空白】折线区是磁贴里一块固定高度的容器，
+        //    什么都不画会让人以为功能坏了；而采样间隔是设置窗口里的合法档位
+        //    （可以选 5 秒），攒够 2 个点要 10 秒。
+        //    空序列 → 垂直中间的一条线（没有数据 ≠「值为 0」）；
+        //    一个点 → 落在那个值的位置上（区间 0..100、值 5 → y=19）。
+        const std::wstring emptyBase = BuildSparklineData({}, 100.0, 20.0,
+                                                           SparklineKind::Line, 0.0, 100.0);
+        Check(!emptyBase.empty() &&
+              emptyBase.find(L"M 0.0,10.0") != std::wstring::npos &&
+              emptyBase.find(L"L 100.0,10.0") != std::wstring::npos,
+              L"空序列画一条垂直中间的水平基线");
+        const std::wstring oneBase = BuildSparklineData({5.0}, 100.0, 20.0,
+                                                        SparklineKind::Line, 0.0, 100.0);
+        Check(oneBase.find(L"M 0.0,19.0") != std::wstring::npos &&
+              oneBase.find(L"L 100.0,19.0") != std::wstring::npos,
+              L"只有一个点时基线落在该值的位置上（值 5 / 区间 0..100 → y=19）");
+
+        // ② 显式纵轴 0..100、控件 100×20：
+        //    值 0 贴底（y=20）、值 100 贴顶（y=0）、最后一列 x 等于控件宽度。
+        const std::vector<double> up{ 0.0, 50.0, 100.0 };
+        const std::wstring line = BuildSparklineData(up, 100.0, 20.0,
+                                                      SparklineKind::Line, 0.0, 100.0);
+        Check(line.rfind(L"M 0.0,20.0", 0) == 0,
+              L"折线起点在左下角（值 0 → 贴底）");
+        Check(line.find(L"L 100.0,0.0") != std::wstring::npos,
+              L"折线终点在右上角（值 100 → 贴顶），x 等于控件宽度");
+        Check(line.find(L"Z") == std::wstring::npos,
+              L"折线形态不闭合");
+
+        // ③ 面积形态要闭合到基线
+        const std::wstring area = BuildSparklineData(up, 100.0, 20.0,
+                                                      SparklineKind::Area, 0.0, 100.0);
+        Check(area.find(L"Z") != std::wstring::npos, L"面积形态闭合到基线");
+        Check(area.size() > line.size(), L"面积形态比折线多出闭合段");
+
+        // ④ 平坦序列不能被放大成锯齿：自动纵轴给它一个居中窗口。
+        //    这是最容易被忽略的一条 —— 恒定值画成锯齿会让用户误以为在剧烈波动。
+        const std::vector<double> flat{ 11.0, 11.0, 11.0, 11.0 };
+        double lo = 0.0, hi = 0.0;
+        ComputeSparkScale(flat, 10.0, &lo, &hi);
+        Check(lo == 6.0 && hi == 16.0,
+              W(L"平坦序列按 minSpan=10 给居中窗口（实测 %.1f..%.1f）", lo, hi));
+        const std::wstring flatLine = BuildSparklineDataAuto(flat, 100.0, 20.0,
+                                                              SparklineKind::Line, 10.0);
+        Check(flatLine.find(L"M 0.0,10.0") != std::wstring::npos &&
+              flatLine.find(L"L 100.0,10.0") != std::wstring::npos,
+              L"平坦序列画成一条水平中线（y 恒为 10）");
+
+        // ⑤ 极差够大时按真实 min/max 缩放
+        const std::vector<double> spread{ 20.0, 40.0, 60.0 };
+        ComputeSparkScale(spread, 10.0, &lo, &hi);
+        Check(lo == 20.0 && hi == 60.0,
+              W(L"极差大于 minSpan 时按真实 min/max（实测 %.1f..%.1f）", lo, hi));
+
+        // ⑥ 只取最近的一段，且丢的是最旧而不是最新
+        std::vector<double> many;
+        for (int i = 0; i < 100; ++i) many.push_back(static_cast<double>(i));
+        const std::wstring manyLine = BuildSparklineData(many, 100.0, 20.0,
+                                                          SparklineKind::Line, 0.0, 100.0);
+        // 最近 40 个点是 60..99；首点值 60 → y = 20 - 60/100*20 = 8.0
+        Check(manyLine.rfind(L"M 0.0,8.0", 0) == 0,
+              L"超过 40 点时只取最近的一段（丢最旧，不丢最新）");
+        Check(manyLine.find(L"L 100.0,0.2") != std::wstring::npos,
+              L"最新一点（值 99）仍在折线末端");
+    }
 
     Line(L"");
     Line(L"[5] 跨周期断言");

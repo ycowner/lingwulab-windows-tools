@@ -120,6 +120,15 @@ $scripts = @(
     @{ n = 'monitor/close-mem-ab';    p = 'tools\monitor\close-mem-ab.ps1';    t = 1100 }
     @{ n = 'monitor/tray-invoke';     p = 'tools\monitor\tray-invoke.ps1';     t = 700; prepare = $true }
     @{ n = 'monitor/tray-click';      p = 'tools\monitor\tray-click.ps1';      t = 700; prepare = $true }
+    # Phase 1 (Mole-style shell + status page + tray panel).
+    @{ n = 'monitor/nav';             p = 'tools\monitor\nav.ps1';             t = 400 }
+    @{ n = 'monitor/tiles';           p = 'tools\monitor\tiles.ps1';           t = 400 }
+    @{ n = 'monitor/proc-icon';       p = 'tools\monitor\proc-icon.ps1';       t = 400 }
+    @{ n = 'monitor/tray-panel';      p = 'tools\monitor\tray-panel.ps1';      t = 400; prepare = $true }
+    @{ n = 'monitor/keep-awake';      p = 'tools\monitor\keep-awake.ps1';      t = 400; prepare = $true }
+    @{ n = 'monitor/clean-screen';    p = 'tools\monitor\clean-screen.ps1';    t = 400; prepare = $true }
+    @{ n = 'monitor/sparkline';       p = 'tools\monitor\sparkline.ps1';       t = 700; prepare = $true }
+    @{ n = 'monitor/exit-all';        p = 'tools\monitor\exit-all.ps1';        t = 400; prepare = $true }
     @{ n = 'service/check';           p = 'tools\service\check.ps1';           t = 300 }
     @{ n = 'service/create';          p = 'tools\service\create.ps1';          t = 700 }
     @{ n = 'service/mem';             p = 'tools\service\mem.ps1';             t = 300 }

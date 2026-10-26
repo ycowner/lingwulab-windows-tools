@@ -29,6 +29,62 @@
             <ResourceDictionary.MergedDictionaries>
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
             </ResourceDictionary.MergedDictionaries>
+
+            <!--
+              【页签主色 —— 每页一个，2026-10-25 Gate 0 拍板】
+              「每页独立主色」这条决策轴的结果：导航容器里当前页签的填充色
+              跟着页面走，六个页面一眼可辨。
+
+              为什么用**普通资源**而不是 ThemeDictionaries：
+              ThemeDictionaries 要求每个键在 Light / HighContrast 两套里都给出值，
+              少一套就在切主题时抛 0x802B000A「找不到资源」——
+              那种失败发生在 InitializeComponent 里，症状是「窗口一个都建不出来」，
+              极难定位。这里六色都取中调色，一份固定值就够了，不需要主题字典。
+
+              为什么不用系统强调色统一一套：
+              那会让六个页签长得一模一样，等于没有导航。
+
+              取值口径：中调（不是深色也不是浅色），保证压在它上面的
+              **反色文字**（主题的 TextOnAccentFillColorPrimaryBrush）
+              对比度足够 —— 实测深色字在这几个色上是 4.70:1 ~ 5.21:1，
+              白字反而只有 3.88:1 ~ 4.46:1（服务青上的白字不达标）。
+              文字颜色由主题决定，不在这里写死。
+            -->
+            <SolidColorBrush x:Key="AccentClean"    Color="#3E7BD9" />  <!-- 清理：蓝 -->
+            <SolidColorBrush x:Key="AccentApps"     Color="#C9525C" />  <!-- 应用：绛红 -->
+            <SolidColorBrush x:Key="AccentOptimize" Color="#A86E22" />  <!-- 优化：赭 -->
+            <SolidColorBrush x:Key="AccentAnalyze"  Color="#7B5BC4" />  <!-- 分析：紫 -->
+            <SolidColorBrush x:Key="AccentStatus"   Color="#4E8529" />  <!-- 状态：橄榄绿 -->
+            <SolidColorBrush x:Key="AccentService"  Color="#278C8C" />  <!-- 服务：青 -->
+
+            <!--
+              【指标语义色 —— 与页签主色是两套东西】
+              磁贴里的小色块、迷你折线、进度条用的是「这个指标是什么」的语义色，
+              跟「当前在哪个页签」无关。两套混用会让人以为颜色在表达页签。
+
+              取值直接用 Gate 0 对照图里的那一组（同一张图上比出来的），
+              所以实现出来的观感与拍板的那张一致。
+            -->
+            <SolidColorBrush x:Key="MetricHealth"   Color="#6CCB5F" />  <!-- 健康分：绿 -->
+            <SolidColorBrush x:Key="MetricCpu"      Color="#4CC2FF" />  <!-- CPU：蓝 -->
+            <SolidColorBrush x:Key="MetricMemory"   Color="#9D7FE0" />  <!-- 内存：紫 -->
+            <SolidColorBrush x:Key="MetricDiskFree" Color="#F7B500" />  <!-- 磁盘剩余：琥珀 -->
+            <SolidColorBrush x:Key="MetricNet"      Color="#5FD18A" />  <!-- 网络：绿 -->
+            <SolidColorBrush x:Key="MetricDiskAct"  Color="#6F8FE0" />  <!-- 磁盘活动：蓝 -->
+            <SolidColorBrush x:Key="MetricBattery"  Color="#F1707B" />  <!-- 电池：红 -->
+
+            <!--
+              【健康分的三档等级色】
+              与上面的指标语义色**分开**：指标色回答「这是什么指标」，
+              等级色回答「这个健康分算好还是差」。混用会让「磁盘剩余是琥珀色」
+              被读成「健康分中等」。
+
+              绿 / 琥珀 / 红与 MetricHealth / MetricDiskFree / MetricBattery
+              取的是同一组色值，但在这里是**独立资源** —— 语义不同就不能共用名字。
+            -->
+            <SolidColorBrush x:Key="HealthGood" Color="#6CCB5F" />  <!-- 健康分良好 -->
+            <SolidColorBrush x:Key="HealthWarn" Color="#F7B500" />  <!-- 健康分一般 -->
+            <SolidColorBrush x:Key="HealthBad"  Color="#F1707B" />  <!-- 健康分较差 -->
         </ResourceDictionary>
     </Application.Resources>
 </Application>

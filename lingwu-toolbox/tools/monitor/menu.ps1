@@ -92,6 +92,31 @@ function Shot([string]$path) {
     return $(if ($ok) { "$w x $h" } else { 'PrintWindow failed' })
 }
 
+# 等某个条件成立（最多 $TimeoutSec 秒），成立就立刻返回。
+#
+# 【为什么不用固定 Start-Sleep】
+# 这里原来写的是「睡 2 秒，然后看一眼在不在」。那个写法有两个问题：
+#   ① 弹窗出现得慢的时候（应用当时忙），2 秒不够 → 明明是好的也判失败；
+#   ② 弹窗**根本**没出现的时候（真的坏了），也是同一句「没找到」——
+#      两种完全不同的结论在输出里长得一模一样。
+# 改成有界轮询之后，超时仍然判失败，但结论是明确的
+# 「12 秒内没出现」，而不再是一个含糊的「等了 2 秒没看到」。
+#
+# 【这条脚本为什么之前会偶发红】
+# 真因是产品缺陷（不是时序）：右键命中后到点「结束任务」之间，
+# 列表重排把选中项换掉 → 确认框压根没弹 → 2 秒后当然找不到「取消」。
+# 那个缺陷已修（见 AGENTS.md 第 2 节第 24 条）。
+# 本脚本的轮询化是为了让**下一次**同类问题能被准确指认，而不是被误判成时序抖动。
+function Wait-Until([scriptblock]$Probe, [int]$TimeoutSec = 12) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $v = & $Probe
+        if ($v) { return $v }
+        Start-Sleep -Milliseconds 250
+    }
+    return $null
+}
+
 # ---- 1) 右键菜单 ---------------------------------------------------------
 $list = Find-Id $win 'ProcessList'
 if (-not $list) { Write-Host 'ProcessList NOT FOUND'; exit 1 }
@@ -113,7 +138,13 @@ $y = [int]($lr.Y + 16 * $scale)
 $lp = [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF))
 Write-Host ("posting WM_CONTEXTMENU at screen $x,$y")
 [void][Native.Win]::PostMessageW($p.MainWindowHandle, $WM_CONTEXTMENU, [IntPtr]::Zero, $lp)
-Start-Sleep -Seconds 2
+
+# 等右键菜单真的弹出来（最多 12 秒）。原来这里是固定睡 2 秒 ——
+# 见 Wait-Until 的注释：固定睡眠会把「应用当时忙」误判成「菜单坏了」。
+$menuUp = Wait-Until {
+    $probe = Find-ByTypeInProc $p.Id ([System.Windows.Automation.ControlType]::MenuItem)
+    return ($probe.Count -gt 0)
+}
 
 $m = Join-Path $env:TEMP "$Prefix`_1_menu.png"
 Write-Host ("menu shot: " + (Shot $m))
@@ -122,7 +153,7 @@ Write-Host ("menu shot: " + (Shot $m))
 $menuItem = $null
 $items = Find-ByTypeInProc $p.Id ([System.Windows.Automation.ControlType]::MenuItem)
 Write-Host ("menuitems in our process: " + $items.Count)
-Assert-True '右键菜单真的弹出来了' ($items.Count -gt 0) "items=$($items.Count)"
+Assert-True '右键菜单真的弹出来了' ($menuUp -eq $true) "items=$($items.Count)"
 foreach ($it in $items) {
     $n = $it.Current.Name
     if ($n) { Write-Host "  item: '$n'" }
@@ -132,19 +163,26 @@ if (-not $menuItem) { Write-Host 'MENU ITEM NOT FOUND'; Write-Host "M=$m"; exit 
 Write-Host ("found menu item: '" + $menuItem.Current.Name + "'")
 Assert-True '菜单里有「结束任务」' $true $menuItem.Current.Name
 $menuItem.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-Start-Sleep -Seconds 2
 
 # ---- 2) 确认弹窗 ---------------------------------------------------------
+# 同样改成等它出来，而不是睡固定时间 —— 确认框是 ContentDialog，
+# 要走 XAML 的内容呈现，比 MenuFlyout 慢。
+$cancel = Wait-Until {
+    $probe = Find-ByTypeInProc $p.Id ([System.Windows.Automation.ControlType]::Button)
+    foreach ($b in $probe) {
+        $n = $b.Current.Name
+        if ($n -and $n -like '*取消*') { return $b }
+    }
+    return $null
+}
+
 $d = Join-Path $env:TEMP "$Prefix`_2_confirm.png"
 Write-Host ("confirm shot: " + (Shot $d))
 
 $btns = Find-ByTypeInProc $p.Id ([System.Windows.Automation.ControlType]::Button)
-$cancel = $null
 foreach ($b in $btns) {
     $n = $b.Current.Name
-    if (-not $n) { continue }
-    Write-Host "  button: '$n'"
-    if (-not $cancel -and $n -like '*取消*') { $cancel = $b }
+    if ($n) { Write-Host "  button: '$n'" }
 }
 
 # ---- 3) 取消，不杀任何进程 ----------------------------------------------

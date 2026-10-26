@@ -91,6 +91,25 @@ namespace LingwuToolbox
         String MemText   { get; };
         String CountText { get; };
 
+        // Icon badge text: the first letter of the app name.
+        //
+        // WHY A LETTER AND NOT THE REAL EXE ICON:
+        //   Binding an ImageSource through {Binding} needs a property whose
+        //   declared type is an XAML type (ImageSource). Declaring that type
+        //   in this idl needs an import of the Windows SDK idl, which is
+        //   exactly the trap documented at the top of this file (MIDL2003
+        //   redefinition cascade over the whole SDK idl chain).
+        //   So the badge shows the app initial instead of the exe icon.
+        String IconText  { get; };
+
+        // PID of the representative process of this row.
+        //
+        // WHY A PRE-FORMATTED STRING:
+        //   The real pid array lives in the page (one flat array for all rows,
+        //   see PidStart/PidCount below). The row itself only knows the
+        //   offset, so the page formats the number while building the row.
+        String PidText   { get; };
+
         // Logical values.
         Double  CpuNorm  { get; };
         UInt64  MemBytes { get; };
@@ -119,6 +138,8 @@ namespace LingwuToolbox
                     String cpuText,
                     String memText,
                     String countText,
+                    String iconText,
+                    String pidText,
                     Double  cpuNorm,
                     UInt64  memBytes,
                     UInt32  procs,

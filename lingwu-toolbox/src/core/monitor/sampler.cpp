@@ -21,7 +21,9 @@
 #include "pch.h"
 
 #include "iphlpapi2.h"   // 见文件头：本工程的 PCH 已先引入 windows.h，靠 LEAN_AND_MEAN 兜底
+#include "health.h"
 #include "sampler.h"
+#include "system_metrics.h"
 #include "top10.h"
 
 #include <algorithm>
@@ -402,6 +404,60 @@ void Sampler::Tick() {
         }
     }
 
+    // ---------- 系统指标 ----------
+    // 节流分两档，依据是「这个值在界面上多久会看出差别」：
+    //   · 磁盘剩余 / 电池：10 个周期一次（默认 1 秒间隔 → 10 秒）。
+    //     这两项不是易变值，而每次都要碰系统（盘符查询 / 电源状态）。
+    //   · 磁盘活动：2 个周期一次。IOCTL 有真实开销（要发一次设备控制码），
+    //     而磁贴上的百分比本来就是概览，不需要秒级精度。
+    // 内存与主机信息每周期刷新：GlobalMemoryStatusEx 是一次纯内存读，
+    // 运行时长只是 GetTickCount64 除一下，都不碰设备。
+    if ((tickSeq % 10) == 1) {
+        work_.diskSpace = QueryDiskSpace();
+        work_.battery   = QueryBattery();
+    }
+    work_.memory = QueryMemory();
+    work_.host   = QueryHostInfo();
+    if ((tickSeq % 2) == 0) {
+        work_.diskActivity = QueryDiskActivity();
+    }
+
+    // 健康分。CPU 占用取「所有进程 cpuNorm 之和」——
+    // 这就是任务管理器的整机口径：每个进程的 cpuNorm 已经除过逻辑核数，
+    // 求和后正好是整机占用率（Idle 进程不计入，所以不会恒占一核）。
+    // 不另开 GetSystemTimes 那一套，避免同一个指标有两处算法。
+    double cpuPercent = 0.0;
+    for (const ProcInfo& p : work_.procs) cpuPercent += p.cpuNorm;
+    if (cpuPercent > 100.0) cpuPercent = 100.0;
+
+    const double diskFreePercent =
+        (work_.diskSpace.valid && work_.diskSpace.totalBytes > 0)
+            ? static_cast<double>(work_.diskSpace.freeBytes) * 100.0
+              / static_cast<double>(work_.diskSpace.totalBytes)
+            : -1.0;
+
+    const HealthResult hr = ComputeHealth(cpuPercent, work_.memory.usedPercent,
+                                           diskFreePercent);
+    work_.healthScore = hr.score;
+    work_.healthGrade = hr.grade;
+    work_.healthValid = hr.valid;
+
+    // ---------- 趋势序列 ----------
+    //
+    // 每周期 push 一次，攒满 64 个点就是约 1 分钟的窗口。
+    // 顺序放在健康分之后：磁贴上画的点与磁贴上显示的数字必须是同一帧的，
+    // 差一帧就会出现「折线已经变了、数字还没变」的错位。
+    work_.history.cpu.Push(cpuPercent);
+    work_.history.mem.Push(work_.memory.usedPercent);
+    work_.history.netDown.Push(static_cast<double>(work_.net.downBps));
+    work_.history.netUp.Push(static_cast<double>(work_.net.upBps));
+    // 磁盘活动每 2 个周期才刷新一次（IOCTL 有真实开销），
+    // 所以它的序列在两次刷新之间会有一段平台。
+    // 这是**如实反映「这两次没测」**，不是采样错误 ——
+    // 而且磁贴上的大数字用的就是同一个值，两者始终一致。
+    work_.history.disk.Push(work_.diskActivity.valid ? work_.diskActivity.percentBusy : 0.0);
+    work_.history.health.Push(work_.healthValid ? static_cast<double>(work_.healthScore) : 0.0);
+
     // ---------- 聚合 + 排序 ----------
     BuildViews(work_, aggregate, sortMode);
 
@@ -418,6 +474,19 @@ void Sampler::SwapToSnapshot() {
     snap_.tickMs                 = work_.tickMs;
     snap_.coreCount              = work_.coreCount;
     snap_.memIsPrivateWorkingSet = work_.memIsPrivateWorkingSet;
+    // 系统级指标。work_ 是复用的缓冲，节流刷新之间保留着上次的值，
+    // 所以这里每周期都拷贝是对的（snap_ 因此始终带着最近一次真实读数）。
+    snap_.diskSpace              = work_.diskSpace;
+    snap_.diskActivity           = work_.diskActivity;
+    snap_.battery                = work_.battery;
+    snap_.memory                 = work_.memory;
+    snap_.host                   = work_.host;
+    snap_.healthScore            = work_.healthScore;
+    snap_.healthGrade            = work_.healthGrade;
+    snap_.healthValid            = work_.healthValid;
+    // 趋势序列。work_ 里的环形缓冲跨周期持续累积（不清零），
+    // 每周期整体拷一版进快照。History 是定长数组，拷贝不产生堆分配。
+    snap_.history                = work_.history;
     Unlock();
     InterlockedExchange(&dirty_, 1);
 }

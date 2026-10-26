@@ -272,6 +272,33 @@ translation unit 里的原因之一。
     不要凭记忆或照抄 UWP 文档：`VirtualizingStackPanel` 没有 `VerticalCacheLength`，
     `ItemsStackPanel` 才有 `CacheLength`；`ScrollViewer` 在 WinUI 3 里干脆没有
     `CanContentScroll`。
+24. **菜单项不能依赖「活状态」，要绑定命中时的快照。**
+    「结束任务」这个右键菜单项属于**你右键的那一行**，不是「此刻列表里选中的是哪一行」。
+    而这两者并不等价：菜单弹出到用户点下去之间可能隔着好几秒，
+    列表每秒都在刷新重排，这段时间里被选中的那一行**可能被换掉或删掉** ——
+    内存排名一变动，第一行就换人。`SelectedItem()` 一旦变成空，
+    `OnListSelectionChanged` 就把 `selectedPids_` 清空，
+    `OnEndTask` 于是 `if (selectedPids_.empty()) return;` —— **静默返回**，
+    用户那边表现为「点了结束任务，既没有确认框也没有任何提示」。
+
+    2026-10-25 实测（`tools/monitor/menu.ps1` 暴露的）：同一份二进制连跑 8 次
+    有 1 次复现，trace 里的时序是
+    ```
+    18:01:54.019  context menu hit row=2
+    18:01:54.730  selection cleared (no SelectedItem)   ← 一次刷新换掉了那一行
+    18:01:54.935  end-task ignored (no selected pids)    ← 点了「结束任务」
+    ```
+    **修法**：命中测试时就把那一行的 pid 区间拷成快照（`contextPids_`），
+    `OnEndTask` 用快照而不是活状态；快照为空才退回活状态。
+    **修后验证**：同一份脚本连跑 8 次全绿，且 trace 里 `end-task ignored` 归零
+    （修复前 8 次里复现 1 次，且那一行必现）。
+
+    > 两条配套纪律：
+    > ① **静默 return 必须落 trace。** 这条路径在验收板上原本完全隐形 ——
+    >    没有异常、没有提示、没有 trace，只有「点了没反应」。
+    >    加了 trace 之后，「点了没反应」才第一次变成了可定位的信号。
+    > ② 验收脚本里凡是「发个动作 → 等一下 → 看结果在不在」都要写成**有界轮询**，
+    >    不要用固定 `Start-Sleep`（见第 11 节第 22 条）。
 
 ## 6. SCM 层的四个致命坑（服务模块，本节最贵）
 
@@ -677,26 +704,87 @@ XAML 那个 `Visibility` 在本工程**不存在**（见第 5 节第 8 条）。
 - 采样间隔的整数除数**必须在整数侧钳 ≥1**：`(uint64_t)0.001 == 0`，
   曾致启动 6 秒必崩 `0xC0000094`
 
-## 10. 托盘菜单契约（2026-10-23 拍板，已实跑取证）
+## 10. 托盘菜单契约（2026-10-23 拍板，2026-10-25 Phase 1 扩到 8 项）
 
-五项，顺序固定：
+八项，顺序固定：
 
 ```
 显示工具箱
 ─────────
-✓ 性能监视          ← 切到 MonitorPage
-  服务管理          ← 切到 ServicePage
-  设置…             ← SettingsWindow
+  清理            ← 规划中，置灰
+  应用            ← 规划中，置灰
+  优化            ← 规划中，置灰
+  分析            ← 规划中，置灰
+✓ 状态            ← 切到 MonitorPage
+  服务            ← 切到 ServicePage
+─────────
+  设置…
 ─────────
   退出
 ```
 
-- 「性能监视 / 服务管理」**带勾选态**，标记当前所在页。勾选态由
+- 「状态 / 服务」**带勾选态**，标记当前所在页。勾选态由
   `TrayCallbacks::getActiveModule()` 现场问一次，托盘模块**不持有**这份状态的副本。
 - 从托盘选模块时**顺带把窗口显示出来**（否则窗口藏在托盘里时菜单动作没有可见效果）。
 - 原 sysmon 菜单里的「按应用聚合」**下沉**到性能页命令栏的 ToggleSwitch
   （避免状态双写）；「重新添加托盘图标」**下沉**到设置窗口标题栏右侧
   （它是动作不是状态，托盘菜单是高频操作区，不该塞维护类动作）。
+- **托盘左键弹的是「指标面板」**，不是主窗口（Phase 1 改的语义）。
+  左键是**切换**语义：面板开着再点左键就收起。防双击在托盘模块侧做（500 ms）。
+  右键仍然是上面的菜单。
+
+## 10b. Phase 1 外壳与托盘面板契约（2026-10-25）
+
+### 导航容器
+
+- 六个页签，顺序固定：**清理 → 应用 → 优化 → 分析 → 状态 → 服务**。
+  前四个是**「规划中」禁用态**（不可点，Tooltip 说明），后两个可切。
+- 每页有**独立主色**（`AccentClean` / `AccentApps` / `AccentOptimize` /
+  `AccentAnalyze` / `AccentStatus` / `AccentService`），选中药丸 = 该页主色填充 + 白字。
+- 页面**惰性构造**：首次进入才建，没建的页面所有调用都要判 `*PageReady_`。
+- 启动落在「状态」（`settings.lastPage` 默认 4），退出时把当前页签写回 ini。
+- **指标语义色与页签主色是两套**；健康分的等级色（`HealthGood/Warn/Bad`）是**第三套**。
+  三者语义不同，不要为了省事共用同一个资源名。
+
+### 托盘指标面板
+
+- 独立顶层 XAML `Window`，固定 **360×530 逻辑像素**（有电池时高 72 DIP），
+  **按值持有**在 MainWindow 里，启动即构造、之后只 Hide/Show。
+  **绝不「关掉就 new 一个」** —— 那会线性泄漏原生资源。
+- 面板高度**跟着电池变**（`ApplyPanelHeight()`）：电池条在台式机上整条隐藏、
+  在笔记本上多占 72 DIP。**只在高度真的变了时才 resize** ——
+  `Resize` 会引起一次布局重排，而 `UpdateNow` 每秒都跑。
+  高度是**量出来的**（内容 505 客户区 DIP → 外框下限 519 → 取 530 留余量），
+  不是拍脑袋定的；改版式要重量一遍，改完记得跑 `tray-panel.ps1`
+  （里面有「底部按钮不能被裁」的断言）。
+- 面板只负责画：数据由外壳通过**普通 C++ 回调**（`std::function`）注入，
+  **不进 IDL**、不暴露公开 WinRT API。
+- 弹出用 `AppWindow().Show(false)`（不抢焦点），收起用 `AppWindow().Hide()`。
+  `AppWindow().Closing` 里 Cancel + Hide；真正关闭只在退出路径 `Shutdown()` → `Close()`。
+- **退出序列必须连带关掉面板**：只要还有一个 Window 活着，XAML 框架的消息循环就不结束，
+  进程会僵留在「窗口全没了但进程还在」。顺序是**面板先关、主窗口后关**。
+- 定位用 `Shell_NotifyIconGetRect`（**动态 GetProcAddress 解析**，静态导入在 Win10 1803
+  之前会让进程起不来），取不到就退回屏幕右下角。
+
+### Phase 1 新踩的坑（2026-10-25）
+
+| # | 坑 | 症状 | 正解 |
+|---|---|---|---|
+| 35 | WinUI 3 **没有 WPF 的 `Fill="None"`** | `InitializeComponent` 抛 `0x802B000A`「找不到 Brush」。面板是 MainWindow 的**值成员**，它一抛，主窗口构造函数体根本轮不到执行 → **整个应用起不来、零窗口** | 用 `Fill="Transparent"` |
+| 36 | WinUI 3 的 `Path` **没有** `StrokeLineCap` / `StrokeLineJoin` | XAML 编译期 `WMC0011` | 去掉 |
+| 37 | `AppWindow` **没有** `Bounds()`；`RectInt32` **没有** `Right` / `Bottom` | 编译不过 | 用 `Position()` + `Size()` 拼；右边界自己算 |
+| 38 | XAML 生成的元素访问器（`HealthGoodProbe()` 等）**不是 const 成员** | 含它们的成员函数不能标 `const` | 别标 |
+| 39 | `SetValue(DependencyProperty, value)` 的 value 必须是 `IInspectable` | 直接传 int 编不过 | `box_value(n)` |
+| 40 | `AutomationId` 是**附加属性**，不是 `FrameworkElement` 的成员 | `error C2039: "AutomationId" 不是 TextBlock 的成员` | `SetValue(AutomationProperties::AutomationIdProperty(), box_value(id))`，且要 `#include <winrt/Microsoft.UI.Xaml.Automation.h>` |
+| 41 | **`Path`（Shape）不进 UIA 树** | UIA 只看得到 Text / Button / Pane | 折线只能**像素取证** |
+| 42 | UIA 的 `BoundingRectangle` 是**屏幕坐标**，截图是**窗口坐标** | 直接拿去取像素会取到别的位置 | 减掉窗口原点 |
+| 43 | **客户区宽度 ≠ 外框宽度**（不可见边框，200% 下左右各 13 DIP） | 定宽列加起来超出容器 → 最右一列被裁掉（数字看不见，不报错） | 名称列用**星号列**，别按外框推算定宽 |
+| 44 | 折线区里「有没有线」不能靠「与背景色的距离」判 | 上一行的灰色字形会被算进来 | 折线描边是**彩色**的，用**饱和度**（max-min）把彩色线与灰色文字分开 |
+| 45 | 环形缓冲的点数跟着**采样间隔**走 | 采样间隔 5 秒时，攒够 2 个点要 10 秒 | 折线**点数不足 2 时画一条基线**（不是留白）—— 见 README 踩坑 35 |
+| 46 | 固定高度的面板里，`Resize` 会引起**一次布局重排** | `UpdateNow` 每秒调一次 → 每秒重排，白烧 CPU，面板还抖 | 高度**只在真的变了时才 resize**（比对目标高度） |
+| 47 | `BlockInput` **要管理员权限**，非提权进程必然失败 | 清理屏里键盘照常能动，用户以为程序坏了 | 把结果**如实写到清理屏的提示行**（「输入已锁定」/「输入锁定失败（需要管理员权限）」），别让人猜；验收脚本断言的是「状态被报出来」，不是「锁上了」 |
+| 48 | 改窗口尺寸前**不看它此刻是不是特殊尺寸** | 清理屏期间窗口铺的是整个虚拟桌面，后台顺手 `Resize` 一下 → 清理屏缩成小窗 | `ApplyPanelHeight()` 开头 `if (cleanMode_) return;`，退出清理屏时补算一次 |
+| 49 | 加了「锁住系统级资源」就要枚举**所有让用户碰不到出口**的路径 | 清理屏锁着输入，面板一收用户就再也按不到 ESC → 整台机器锁死 | `HidePanel()` 开头 `if (cleanMode_) ExitCleanScreen();` —— **解锁路径必须比加锁路径多**；验收脚本有对应断言 |
 
 ## 11. 验收脚本
 
@@ -711,9 +799,26 @@ tools/
 │  └─ mem-baseline.ps1 内存红线基线：五个场景的长跑，报告工作集/私有内存两列
 ├─ monitor/          性能监视侧 21 个
 ├─ service/          服务管理侧 4 个
-└─ build/            构建工具 2 个（make-icon / install-winui-workload）
-                     + run-all.ps1（整轮验收运行器）
+└─ build/            构建工具 3 个（make-icon / install-winui-workload
+                     / make-unelevated）+ run-all.ps1（整轮验收运行器）
 ```
+
+> **`make-unelevated.ps1` 补上了一个「文档里有、代码里没有」的东西。**
+> 之前 `run-all.ps1 -Unelevated` 会去找 `build\unelevated\LingwuToolbox.exe`，
+> 找不到就打印一句「Build it once: copy dist\Release to build\unelevated,
+> then patch the embedded manifest」—— **造副本这件事没有任何脚本在做**，
+> 全靠人手。现在这个脚本把整条链路自动化了：清目录 → 整目录拷贝 →
+> `mt.exe` 抽清单 → `requireAdministrator` 改成 `asInvoker` → 写回 →
+> **再从二进制里读回来验证**（验证的是二进制，不是中间那份 xml ——
+> 写回那一步才是可能静默失败的那一步）。
+>
+> 三个踩过的坑都写在脚本注释里：
+> - `mt.exe` 的参数是 **`-inputresource:<exe>;#1` / `-outputresource:<exe>;#1`**，
+>   没有 `-input` 这个选项（写了会报 `c1010007: Unexpected/Unknown option`）；
+> - `;#1` 必须整体待在**一个引号里** —— 不加引号时 `;` 是 shell 的命令分隔符，
+>   命令会被从中间截断，报出来的错跟真正的原因毫无关系；
+> - 副本必须**连整个目录一起拷**：自包含部署的框架 DLL 是从 exe 旁边加载的，
+>   只拷 exe 的话应用根本起不来。
 
 | 脚本 | 覆盖 |
 |---|---|
@@ -736,6 +841,14 @@ tools/
 | `tools/monitor/repro-close.ps1` | 最小复现：第三次 WM_CLOSE 为什么把进程弄没了 |
 | `tools/monitor/tray-invoke.ps1` | 托盘交互（UIA `InvokePattern`，**推荐**：不需要坐标，溢出区照样能点） |
 | `tools/monitor/tray-click.ps1` | 托盘交互（`SendInput` 合成点击）。本机点不动 shell → 报 **SKIP** 而不是 FAIL（见第 20 条） |
+| `tools/monitor/nav.ps1` | **六页签**：都存在 / 前四个「规划中」禁用 / 状态与服务可切 / 选中态唯一 / 切页不重建 |
+| `tools/monitor/tiles.ps1` | **磁贴**：AutomationId 齐全 / 数值在两个真实采样周期之间会变 |
+| `tools/monitor/proc-icon.ps1` | **进程表图标列**：列存在且宽度对 / 图标非空或已退化成首字母色块（不破图） |
+| `tools/monitor/sparkline.ps1` | **折线**：点数随采样增长 / 采样间隔变了窗口长度不变 / 折线确实画出来了（像素取证） |
+| `tools/monitor/tray-panel.ps1` | **托盘指标面板**：左键弹出 / 再点收起 / 不抢焦点 / 面板内进主窗口 / 折线与进程表列宽 |
+| `tools/monitor/keep-awake.ps1` | **保持常亮**：按钮文字翻转 / ini 落盘 / 关掉复位 |
+| `tools/monitor/clean-screen.ps1` | **清理屏**：覆盖虚拟桌面 / ESC 退出后恢复原尺寸 |
+| `tools/monitor/exit-all.ps1` | **退出回归**：开了面板再退出 → 所有窗口归零 → **进程真的消失**（防僵尸） |
 | `tools/monitor/diag.ps1` | trace 采集 |
 | `tools/monitor/shot.ps1` | 截图 |
 | `tools/common/mem-baseline.ps1` | **内存红线基线**：静止 / 两页互切 / 隐藏-显示 / 设置开合 / 托盘常驻 |
@@ -744,6 +857,7 @@ tools/
 | `tools/service/mem.ps1` | 服务侧干净实例内存 |
 | `tools/service/admin.ps1` | 提权模型：应用是管理员、写操作直接生效、不弹提权框 |
 | `tools/build/make-icon.ps1` | 生成 `resources/app.ico`（几何图形，可复现） |
+| `tools/build/make-unelevated.ps1` | 造 `build\unelevated` 验证副本（清单改成 `asInvoker`），供 `run-all.ps1 -Unelevated` 驱动 |
 
 ### 验收脚本的输出契约
 
@@ -972,6 +1086,27 @@ wrapper 用 `*>` 把子脚本的输出收进临时日志，用一个 `.code` 文
     而报出来的错跟「托盘图标为什么找不到」毫无关系。
     **凡是给 `GetCurrentPattern` 传参的地方，一律 `::Pattern`。**
 
+22. **断言「某个弹窗出来了」不能用固定 `Start-Sleep` 去看。**
+    `tools/monitor/menu.ps1` 原本是
+    `PostMessageW(WM_CONTEXTMENU)` → `Start-Sleep -Seconds 2` → 看菜单项在不在。
+    固定睡眠有两个问题：弹窗慢的时候误判失败；弹窗**根本**没出现的时候
+    （真的坏了）也是同一句「没找到」—— **两种结论在输出里长得一模一样**。
+    改成有界轮询（`Wait-Until`，最多 12 秒，出现的瞬间就过）：
+    ```powershell
+    $menuUp = Wait-Until {
+        $probe = Find-ByTypeInProc $p.Id ([System.Windows.Automation.ControlType]::MenuItem)
+        return ($probe.Count -gt 0)
+    }
+    Assert-True '右键菜单真的弹出来了' ($menuUp -eq $true) "items=$($items.Count)"
+    ```
+    **断言强度没变**（超时就挂），但结论从「等了 2 秒没看到」变成
+    「12 秒内没出现」—— 这才能把真缺陷和时序抖动分开。
+
+    > 这条坑是**跟着第 24 条一起暴露的**：当时 `menu.ps1` 偶发红，
+    > 表面看是脚本时序问题，真因是产品的「结束任务」静默失败
+    > （见下一条）。**先查产品，再怪脚本** ——
+    > 验收脚本的红有时正是产品缺陷的唯一线索。
+
 
 ### `tools/common/tray.ps1` 的 API 契约
 
@@ -1087,19 +1222,23 @@ trace 的打开方式：环境变量 `LINGWU_TRACE` 非空，**或**存在标记
 
 | 决策 | 结论 |
 |---|---|
-| 程序形态 | 单 exe · 单窗口 · 导航切换两个模块 · 常驻托盘 |
+| 程序形态 | 单 exe · 单窗口 · **六页签导航**（前四个「规划中」禁用）· 常驻托盘 |
 | 权限模型 | **整个工具箱默认以管理员身份运行**（manifest `requireAdministrator`） |
 | 提权入口 | **没有「以管理员身份重新启动」**（程序本来就是管理员） |
-| 导航样式 | 标题栏居中的**药丸分段**，选中项整块填充强调色 |
+| 导航样式 | 标题栏居中的**药丸分段**，选中项整块填充**该页主色**（每页一个主色） |
 | 关闭窗口时 | 三态下拉：每次询问 / 总是隐藏到托盘 / 总是退出程序 |
-| 设置窗口版式 | 「关闭窗口时」用**下拉**；「重新添加托盘图标」在**标题栏右侧**；固定 590×560 逻辑像素 |
-| 托盘菜单 | 五项，模块项**带勾选态**标记当前页 |
+| 设置窗口版式 | 「关闭窗口时」用**下拉**；「重新添加托盘图标」在**标题栏右侧**；固定 **590×660** 逻辑像素 |
+| 托盘菜单 | **八项**（含四个规划中的置灰页签），模块项**带勾选态**标记当前页 |
+| 托盘左键 | 弹**指标面板**（360×530），切换语义：开着再点就收起 |
+| 清理屏时锁定输入 | **默认开**（2026-10-25 用户拍板）—— 清理屏的用途就是挡误触；仍留开关给「要边清理屏边操作别的程序」的场景 |
+| 采样间隔 | **默认 1 秒**（2026-10-25 用户拍板） |
+| 托盘面板高度 | **530 DIP**（2026-10-25 用户拍板「把面板高度降下来」）—— 量出来的，不是估的：内容 505 客户区 DIP → 外框下限 519 → 取 530 留余量；有电池时 +72 DIP |
 | 功能范围（服务） | 列表 + 只读详情 + 启停重启 + 启动类型切换 + 创建 + 删除 |
 | 运行账户 | 只支持 `LocalSystem` / `LocalService` / `NetworkService`，**不支持自定义账户与密码** |
 | 依赖服务 | 不支持多选，`lpDependencies` 传 `nullptr` |
 | 默认视图 | 全部服务（与 `services.msc` 一致） |
 | 详情面板 | **默认折叠**，不自动展开 |
-| 内存红线 | **私有内存 220 MB**（工作集只记录，不卡）—— 2026-10-24 在 Phase 6b 实测基线（稳态 201.3 MB）上重新拍板 |
+| 内存红线 | **私有内存 220 MB**（工作集只记录，不卡）—— 2026-10-24 在 Phase 6b 实测基线（稳态 201.3 MB）上重新拍板；2026-10-25 六场景复测峰值 **183.8 MB**，余量 36 MB |
 | 版本 | 从 `0.0.1` 起 |
 | 验收脚本目录 | **子目录 + 去冗余前缀**：`tools/common/` `tools/monitor/` `tools/service/` `tools/build/` |
 | 非提权 shell 跑验收 | **自动提权重跑**（`-Verb RunAs` 重启自己，输出重定向到临时日志，子进程结束后回显日志并透传退出码） |

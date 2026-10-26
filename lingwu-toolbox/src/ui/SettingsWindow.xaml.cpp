@@ -49,17 +49,19 @@ constexpr int kIntervalChoices[] = { 500, 1000, 2000, 5000 };
 
 // 设置窗口的固定尺寸（**逻辑**像素）。
 //
-// 590×560 这个数值是按内容反推的：
+// 590×660 这个数值是按内容反推的：
 //   · 宽 590：左边说明列（最长「启动时以及点名称列回退到的排序方式」
 //     约 252 逻辑）+ 右边下拉 180 + 左右外边距 48 = 480，还有余量，
 //     说明文字不会换行；
-//   · 高 560：五个设置项 + 口径说明 + 标题栏 48 + 按钮栏 60 正好装下。
+//   · 高 660：七个设置项 + 口径说明 + 标题栏 48 + 按钮栏 60 正好装下。
+//     （原为 560，Phase 1 加了「保持常亮」「清理屏时锁定输入」两行，
+//     每行连说明文字约 50 逻辑像素。）
 //
 // 【为什么要固定，而不是让窗口按内容自适应】
 // 实测自适应会撑到 1440×755 逻辑像素（物理 2880×1511），几乎占满整块屏，
 // 中间一大片空白 —— 根因是根 Grid 的第二行是 "*"，自适应时它把窗口整个撑开。
 constexpr int kSettingsWidthLogical  = 590;
-constexpr int kSettingsHeightLogical = 560;
+constexpr int kSettingsHeightLogical = 660;
 
 }  // namespace
 
@@ -172,7 +174,7 @@ int SettingsWindow::IndexFromIntervalMs(int ms) {
 
 // ---------------------------------------------------------------- 装配
 void SettingsWindow::LoadFrom(bool aggregate, int sortMode, int intervalMs, bool autoStart,
-                               int closeAction) {
+                               int closeAction, bool keepAwake, bool cleanScreenLockInput) {
     // 主窗口在 make<SettingsWindow>() 之后、Activate() 之前调用。
     // 此时构造函数已经跑完 InitializeComponent + WireEvents，控件全都真实存在，
     // 所以这里既写成员（供「确定」时兜底）也直接灌控件（保证用户看到的就是现状）。
@@ -192,12 +194,18 @@ void SettingsWindow::LoadFrom(bool aggregate, int sortMode, int intervalMs, bool
                        closeAction <= lingwu::core::kCloseExitProgram)
                           ? closeAction
                           : lingwu::core::kCloseAsk;
+    // 「保持常亮」与「清理屏时锁定输入」。这两个开关与托盘面板里的动作按钮
+    // 是同一份 settings 字段的两处入口，所以这里搬的就是当前真实状态。
+    resKeepAwake_ = keepAwake;
+    resCleanScreenLockInput_ = cleanScreenLockInput;
 
     AggregateSwitch().IsOn(aggregate);
     AutoStartSwitch().IsOn(autoStart);
     SortCombo().SelectedIndex(IndexFromSortMode(sortMode));
     IntervalCombo().SelectedIndex(IndexFromIntervalMs(intervalMs));
     AutoStartError().Visibility(Visibility::Collapsed);
+    KeepAwakeSwitch().IsOn(keepAwake);
+    CleanScreenLockSwitch().IsOn(cleanScreenLockInput);
 
     // ---- 「关闭窗口时」的三态 --------------------------------------------
     //
@@ -240,6 +248,8 @@ void SettingsWindow::WireEvents() {
     SortCombo().SelectedIndex(IndexFromSortMode(resSortMode_));
     IntervalCombo().SelectedIndex(IndexFromIntervalMs(resIntervalMs_));
     AutoStartError().Visibility(Visibility::Collapsed);
+    KeepAwakeSwitch().IsOn(resKeepAwake_);
+    CleanScreenLockSwitch().IsOn(resCleanScreenLockInput_);
 
     HWND hwnd{};
     check_hresult(this->m_inner.as<::IWindowNative>()->get_WindowHandle(&hwnd));
@@ -277,6 +287,11 @@ void SettingsWindow::OnOk() {
     resAggregate_  = AggregateSwitch().IsOn();
     resSortMode_   = SortModeFromIndex(SortCombo().SelectedIndex());
     resIntervalMs_ = IntervalMsFromIndex(IntervalCombo().SelectedIndex());
+    // 两个动作开关。ToggleSwitch 的当前值可以**随时**读（不像 ComboBox
+    // 的 SelectedIndex 要等控件装配完），但统一放在「确定」时读一遍，
+    // 免得用户在窗口开着的时候中途拨了开关。
+    resKeepAwake_ = KeepAwakeSwitch().IsOn();
+    resCleanScreenLockInput_ = CleanScreenLockSwitch().IsOn();
     accepted_      = true;
 
     // ---- 「关闭窗口时」的取值 --------------------------------------------

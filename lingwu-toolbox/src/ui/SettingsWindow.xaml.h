@@ -24,7 +24,7 @@ struct SettingsWindow : SettingsWindowT<SettingsWindow> {
     // 这样设置窗口一打开就是真实状态，而不是结构体默认值。
     // 调用时机在构造函数之后，InitializeComponent 已跑完，控件都真实存在。
     void LoadFrom(bool aggregate, int sortMode, int intervalMs, bool autoStart,
-                  int closeAction);
+                  int closeAction, bool keepAwake, bool cleanScreenLockInput);
 
     // 用户是否按了「确定」。只有 true 时主窗口才需要回读并应用。
     bool Accepted() const { return accepted_; }
@@ -48,6 +48,10 @@ struct SettingsWindow : SettingsWindowT<SettingsWindow> {
     // 「关闭窗口时」的档位。取值见 core/settings.h 的
     // kCloseAsk / kCloseMinimizeToTray / kCloseExitProgram。
     int      ResultCloseAction() const { return resCloseAction_; }
+    // 「保持常亮」与「清理屏时锁定输入」。这两个开关与托盘面板里的动作按钮
+    // 写的是同一份 settings 字段，两处入口必须一致。
+    bool     ResultKeepAwake() const { return resKeepAwake_; }
+    bool     ResultCleanScreenLockInput() const { return resCleanScreenLockInput_; }
 
 private:
     void ApplyBackdrop();
@@ -113,6 +117,12 @@ private:
     // 「关闭窗口时」的当前档位。0 询问 / 1 隐藏到托盘 / 2 退出程序。
     // 取值常量见 core/settings.h。
     int  resCloseAction_ = lingwu::core::kCloseAsk;
+
+    // 「保持常亮」与「清理屏时锁定输入」的当前值。
+    // 与托盘面板共用同一份 settings 字段（core::Settings::keepAwake /
+    // cleanScreenLockInput），所以这里只是搬运，不另存一份。
+    bool resKeepAwake_ = false;
+    bool resCleanScreenLockInput_ = false;
 
     // 「确定」时自启注册表写入失败的原因。UI 上把它显示出来并**阻止关闭**，
     // 否则用户会以为开关生效了，下次重启发现没自启更难排查。

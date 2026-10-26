@@ -166,6 +166,20 @@ MainWindow::MainWindow() {
     // 否则 A 模块保存时会用旧副本覆盖 B 模块刚写的键。
     lingwu::core::LoadSettings(settings_);
 
+    // 托盘指标面板的接线。
+    //
+    // 【为什么面板是构造时就存在的成员，而不是第一次点托盘才建】
+    // WinUI 3 的 Window 关闭后不可复用，而「关掉就 new 一个」实测线性泄漏
+    // 原生资源。既然它一辈子只构造一次，就放在启动时装配 ——
+    // 免得「第一次点托盘要等窗口初始化」这种延迟落在用户的第一次点击上。
+    //
+    // 取数走外壳转发：面板自己不碰采样器，只向状态页要一份快照。
+    // 动作也走外壳：「打开工具箱」就是现有的 ShowAndActivate。
+    trayPanel_.Initialize(
+        &settings_,
+        [this]() { return monitorPage_.CurrentSnapshot(); },
+        [this]() { ShowAndActivate(); });
+
     // 跨模块对话框闸门。两个页面共用同一把。
     gate_ = std::make_shared<DialogGate>();
 
@@ -276,13 +290,22 @@ MainWindow::MainWindow() {
 
     // 页面在窗口就绪之后创建。
     //
-    // 【先记下药丸的默认文字色】
+    // 【先记下页签的默认文字色】
     // 未选中态不另取主题画刷，而是把 Button 此刻的默认 Foreground 存下来 ——
     // 那本来就是主题给正文用的颜色（深色主题下是近白，浅色主题下是近黑）。
-    // 必须在任何一次 UpdateNavPills() 之前取，否则取到的就是被改过的颜色。
-    navIdleForeground_ = NavMonitorButton().Foreground();
+    // 必须在任何一次 UpdateNavTabs() 之前取，否则取到的就是被改过的颜色。
+    navIdleForeground_ = NavStatusButton().Foreground();
 
-    CreatePages();
+    // 启动落在上次停留的页签。设置里的 LastPage 与 Module 枚举一一对应；
+    // 指向尚未实现的页签（清理/应用/优化/分析）时退回「状态」。
+    {
+        const int last = settings_.lastPage;
+        currentModule_ = (last == static_cast<int>(Module::Service))
+                            ? Module::Service : Module::Status;
+    }
+
+    EnsurePage(currentModule_);
+    ShowModule(currentModule_);
     WireEvents();
 
     // 托盘放在最后：它要用到上面定好的 hwnd_（发单实例激活消息），
@@ -292,25 +315,33 @@ MainWindow::MainWindow() {
 }
 
 // ---------------------------------------------------------------- 导航
-void MainWindow::UpdateNavPills() {
-    const bool monitor = (currentModule_ == Module::Monitor);
-
-    // 强调色与反色文字都从 XAML 探针上取（见 XAML 里探针的注释）。
-    const auto accent   = AccentBrushProbe().Background().as<SolidColorBrush>();
+void MainWindow::UpdateNavTabs() {
+    // 反色文字（写在被选中的主色上）。由主题决定深浅 ——
+    // Gate 0 的对照图上就是深色字压在主色上，而且深色字在这六个中调主色上的
+    // 对比度更高（状态绿 4.70:1 vs 白字 4.46:1；服务青 5.21:1 vs 3.88:1）。
     const auto onAccent = OnAccentBrushProbe().Background().as<SolidColorBrush>();
-    if (!accent || !onAccent) return;
+    if (!onAccent) return;
+
+    // 两个已实现页签各自的主色。前四个页签还是禁用态占位，
+    // 主色探针也一并读了 —— 将来启用时只要把这两行放开即可。
+    const auto statusAccent  = AccentStatusProbe().Background().as<SolidColorBrush>();
+    const auto serviceAccent = AccentServiceProbe().Background().as<SolidColorBrush>();
+    if (!statusAccent || !serviceAccent) return;
 
     const auto clear = SolidColorBrush(Microsoft::UI::Colors::Transparent());
 
-    NavMonitorPill().Background(monitor ? accent : clear);
-    NavServicePill().Background(monitor ? clear : accent);
-    NavMonitorButton().Foreground(monitor ? onAccent : navIdleForeground_);
-    NavServiceButton().Foreground(monitor ? navIdleForeground_ : onAccent);
+    const bool status  = (currentModule_ == Module::Status);
+    const bool service = (currentModule_ == Module::Service);
+
+    NavStatusPill().Background(status ? statusAccent : clear);
+    NavServicePill().Background(service ? serviceAccent : clear);
+    NavStatusButton().Foreground(status ? onAccent : navIdleForeground_);
+    NavServiceButton().Foreground(service ? onAccent : navIdleForeground_);
 }
 
 // ---------------------------------------------------------------- 页面
-void MainWindow::CreatePages() {
-    // 两个页面都**构造一次、常驻**，切换只改 Visibility。
+void MainWindow::EnsurePage(Module m) {
+    // 页面**构造一次、常驻**，切换只改 Visibility。
     //
     // 【为什么不按需重建】
     // 性能监视页的列表遵守「ItemsSource 全生命周期只赋值一次」的铁律
@@ -318,53 +349,77 @@ void MainWindow::CreatePages() {
     // 重建页面 = 新建一套行容器 + 重新赋 ItemsSource，
     // 那条铁律就白立了，而且每次切页都会漏一批原生资源。
     //
+    // 【为什么要惰性】
+    // 本轮只有「状态」与「服务」两页有实现。服务页要拉 SCM、读注册表、
+    // 建一整套列表 —— 用户这一轮没打开过的话，那份开销纯属白付。
+    // 所以页面本体在**第一次进入该页签时**才建，之后永不重建。
+    //
     // 【为什么先 Initialize 再 Append】
     // Initialize 里会调 InitializeComponent() 建出 XAML 树；
     // 挂进 PageHost 之前建好，页面第一次布局时元素就已经在位。
-    monitorPage_.Initialize(&settings_, gate_);
-    PageHost().Children().Append(monitorPage_);
-
-    servicePage_.Initialize(&settings_, gate_);
-    PageHost().Children().Append(servicePage_);
-
-    ShowModule(Module::Monitor);
+    if (m == Module::Status && !monitorPageReady_) {
+        monitorPageReady_ = true;
+        monitorPage_.Initialize(&settings_, gate_);
+        PageHost().Children().Append(monitorPage_);
+        LINGWU_TRACE("MainWindow: monitor page created");
+    }
+    if (m == Module::Service && !servicePageReady_) {
+        servicePageReady_ = true;
+        servicePage_.Initialize(&settings_, gate_);
+        PageHost().Children().Append(servicePage_);
+        LINGWU_TRACE("MainWindow: service page created");
+    }
 }
 
 void MainWindow::ShowModule(Module m) {
-    currentModule_ = m;
-    const bool monitor = (m == Module::Monitor);
-    monitorPage_.Visibility(monitor ? Visibility::Visible : Visibility::Collapsed);
-    servicePage_.Visibility(monitor ? Visibility::Collapsed : Visibility::Visible);
+    // 尚未实现的页签（清理 / 应用 / 优化 / 分析）本轮是禁用态占位，
+    // 不接受切换。托盘菜单与设置里如果传进来，一律退回「状态」。
+    if (m != Module::Status && m != Module::Service) {
+        LINGWU_TRACE("MainWindow: module %d is not implemented yet, ignored",
+                     static_cast<int>(m));
+        return;
+    }
 
-    // 导航药丸的选中态同步。
+    EnsurePage(m);
+    currentModule_ = m;
+    const bool status = (m == Module::Status);
+    if (monitorPageReady_) {
+        monitorPage_.Visibility(status ? Visibility::Visible : Visibility::Collapsed);
+    }
+    if (servicePageReady_) {
+        servicePage_.Visibility(status ? Visibility::Collapsed : Visibility::Visible);
+    }
+
+    // 导航页签的选中态同步。
     //
     // 【为什么不需要重入保护】
     // 早先用 SelectorBar 时，程序化设置 SelectedItem 会再触发一次
     // SelectionChanged，得靠 suppressNav_ 挡住「切模块 → 事件 → 再切模块」。
-    // 现在药丸的选中态是自己刷颜色（UpdateNavPills），不经过任何会回调的事件，
+    // 现在页签的选中态是自己刷颜色（UpdateNavTabs），不经过任何会回调的事件，
     // 所以那面挡板就不需要了。
-    UpdateNavPills();
+    UpdateNavTabs();
 
     // 右键菜单的命中测试改指向当前活动页面。
     // 命中测试要用到行高、列表位置、滚动偏移 —— 都是页面自己的布局信息，
     // 所以由页面自己算，外壳只负责把回调指过去。
     if (menuHost_) {
         menuHost_->hitTest = [this](winrt::Windows::Foundation::Point const& pt) {
-            return currentModule_ == Module::Monitor
-                ? monitorPage_.HitTestRow(pt)
-                : servicePage_.HitTestRow(pt);
+            if (currentModule_ == Module::Status) {
+                return monitorPageReady_ && monitorPage_.HitTestRow(pt);
+            }
+            return servicePageReady_ && servicePage_.HitTestRow(pt);
         };
     }
 
     // 切回某个模块时补一次刷新：不可见期间刷新是被跳过的
     // （见 MonitorPage::Refresh 的注释），数据会停在切走那一刻。
-    if (monitor) {
-        monitorPage_.RefreshNow();
+    if (status) {
+        if (monitorPageReady_) monitorPage_.RefreshNow();
     } else {
-        servicePage_.RefreshNow();
+        if (servicePageReady_) servicePage_.RefreshNow();
     }
     LINGWU_TRACE("MainWindow: switched to %s",
-                 currentModule_ == Module::Monitor ? "monitor" : "service");
+                 currentModule_ == Module::Status ? "status" : "service");
 }
 
 // ---------------------------------------------------------------- 背景
@@ -382,8 +437,9 @@ void MainWindow::ApplyBackdrop() {
 
 // ---------------------------------------------------------------- 事件
 void MainWindow::WireEvents() {
-    // 导航切换。药丸是 Button，Click 是 RoutedEventHandler（委托族可用）。
-    NavMonitorButton().Click([this](auto&&, auto&&) { ShowModule(Module::Monitor); });
+    // 导航切换。页签是 Button，Click 是 RoutedEventHandler（委托族可用）。
+    // 前四个页签（清理 / 应用 / 优化 / 分析）是禁用态占位，压根不会有 Click。
+    NavStatusButton().Click([this](auto&&, auto&&) { ShowModule(Module::Status); });
     NavServiceButton().Click([this](auto&&, auto&&) { ShowModule(Module::Service); });
 
     // ---- 对话框互斥闸门 --------------------------------------------------
@@ -421,8 +477,19 @@ void MainWindow::WireEvents() {
         // 两个页面各自的子窗口也要真正关闭。
         // 只要还有一个 Window 活着，XAML 框架的消息循环就不会结束，
         // 进程会变成「窗口全没了但进程还在」的僵留状态。
-        monitorPage_.Shutdown();
-        servicePage_.Shutdown();
+        //
+        // 惰性构造之后必须判 ready —— 没建过的页面里 settings_ 是 nullptr，
+        // ServicePage::Shutdown() 会拿它去落盘，直接崩。
+        if (monitorPageReady_) monitorPage_.Shutdown();
+        if (servicePageReady_) servicePage_.Shutdown();
+
+        // 托盘指标面板的兜底关闭。
+        //
+        // 正常退出路径（RequestExit）已经关过它了，那一次 Shutdown 内部
+        // 有「已关闭就不再关」的护栏。这里再调一次是为了兜住
+        // 「主窗口被别的路径关掉」的情况 —— 面板还开着的话，
+        // 进程会僵留在「窗口全没了但进程还在」的状态。
+        trayPanel_.Shutdown();
 
         platform::ShutdownTrayIcon();
         LINGWU_TRACE("MainWindow closed");
@@ -443,19 +510,28 @@ void MainWindow::InitTray() {
     // 全部捕获 this：这些 lambda 只可能在本窗口活着的时候被调
     // （托盘消息窗口与本窗口同线程，本窗口 Closed 时托盘已撤）。
     cb.onShowMain = [this]() { ShowAndActivate(); };
+    // 托盘左键：弹出 / 收起托盘指标面板。
+    //
+    // 【为什么不是「唤出主窗口」】
+    // 用户点托盘图标时想要的是「看一眼现在的状态」，不是「把主窗口扒拉到前面」。
+    // 主窗口是个 900 DIP 宽的大窗，弹出来会盖住半个屏幕；
+    // 面板只有 360×530，看完点「打开工具箱」再唤主窗口更符合意图。
+    cb.onShowPanel = [this]() { ToggleTrayPanel(); };
     // 模块切换：**顺带把窗口显示出来**。
     // 窗口藏在托盘里时，用户从托盘菜单点「服务管理」，
     // 如果不显示窗口就等于什么也没发生（菜单动作没有可见效果）。
     cb.onSelectModule = [this](platform::TrayModule m) {
         ShowModule((m == platform::TrayModule::Service) ? Module::Service
-                                                         : Module::Monitor);
+                                                         : Module::Status);
         ShowAndActivate();
     };
     cb.getActiveModule = [this]() {
         return (currentModule_ == Module::Service) ? platform::TrayModule::Service
-                                                   : platform::TrayModule::Monitor;
+                                                   : platform::TrayModule::Status;
     };
-    cb.onSettings = [this]() { monitorPage_.OpenSettings(); };
+    cb.onSettings = [this]() {
+        if (monitorPageReady_) monitorPage_.OpenSettings();
+    };
     cb.onExit     = [this]() { RequestExit(); };
 
     if (!platform::InitTrayIcon(cb)) {
@@ -467,6 +543,19 @@ void MainWindow::InitTray() {
     // 把主窗口 HWND 写进共享内存，供第二份启动时定位本份窗口。
     // 必须在 Activate 之前：第二份可能在 Activate 之前就发消息过来。
     platform::PublishMainHwnd(hwnd_);
+}
+
+void MainWindow::ToggleTrayPanel() {
+    // 切换语义：面板已显示 → 收起；未显示 → 弹出。
+    //
+    // 【为什么不在这里做防抖】
+    // 防抖在托盘模块那侧做（500 ms），因为「双击」是那边能观察到的事件。
+    // 这一层只负责「现在是开是关」这一个判断。
+    if (trayPanel_.IsVisible()) {
+        trayPanel_.HidePanel();
+        return;
+    }
+    trayPanel_.ShowPanel();
 }
 
 void MainWindow::ShowAndActivate() {
@@ -502,8 +591,8 @@ void MainWindow::ShowAndActivate() {
     // 用户看到的就是此刻的快照，不会是过期内容。
     monitorPage_.SetHostVisible(true);
     servicePage_.SetHostVisible(true);
-    monitorPage_.RefreshNow();
-    servicePage_.RefreshNow();
+    if (monitorPageReady_) monitorPage_.RefreshNow();
+    if (servicePageReady_) servicePage_.RefreshNow();
     LINGWU_TRACE("MainWindow::ShowAndActivate visible=%d iconic=%d",
                      ::IsWindowVisible(hwnd_) ? 1 : 0, ::IsIconic(hwnd_) ? 1 : 0);
 }
@@ -647,8 +736,28 @@ void MainWindow::RequestExit() {
     // 消息循环照样不结束 —— 表现就是进程永远退不掉（trace 里能看到
     // 「MainWindow closed」已经打过，但进程仍在）。
     // 只有真正的 Window::Close() 才会把它从框架里注销掉。
-    monitorPage_.Shutdown();
-    servicePage_.Shutdown();
+    if (monitorPageReady_) monitorPage_.Shutdown();
+    if (servicePageReady_) servicePage_.Shutdown();
+
+    // 托盘指标面板也必须**真正关闭**。
+    //
+    // 它是一个顶层 Window，只要它还活着，XAML 框架的消息循环就不会结束 ——
+    // 进程会变成「窗口全没了但进程还在」的僵留状态（托盘图标也没了、
+    // 任务管理器里还在）。
+    //
+    // 顺序很重要：面板必须**先**关，主窗口**后**关。
+    // 主窗口的 Closed 处理器一跑，框架就开始收尾了；
+    // 那时再去关面板就晚了。
+    trayPanel_.Shutdown();
+
+    // 退出时把「上次停在哪个页签」落盘。
+    // 只在退出路径写一次 —— 切页是高频动作，而 ini 写入是同步磁盘 IO。
+    settings_.lastPage = static_cast<int>(currentModule_);
+    try {
+        lingwu::core::SaveSettings(settings_);
+    } catch (std::exception const& e) {
+        LINGWU_TRACE("MainWindow::RequestExit save settings threw %s", e.what());
+    }
 
     // 关窗口 → Closed 处理器跑（停采样线程、摘子类）→ XAML 框架的消息循环
     // 自然结束 → main.cpp 的 Application::Start 返回 → 撤托盘、释放互斥量。

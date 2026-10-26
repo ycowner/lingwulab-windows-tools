@@ -128,7 +128,12 @@ function Switch-Module($Win, [ValidateSet('Monitor', 'Service')][string]$Module)
         Write-Host "  already on the $Module page"
         return
     }
-    $btnId = if ($Module -eq 'Service') { 'NavServiceButton' } else { 'NavMonitorButton' }
+    # The status tab's AutomationId is NavStatusButton, not NavMonitorButton.
+    # Phase 1 (Mole-style shell) renamed the six tabs to match their labels:
+    # 清理 / 应用 / 优化 / 分析 / 状态 / 服务. Before that it was
+    # NavMonitorButton + NavServiceButton, and every script that switched
+    # modules died with "AutomationId 'NavMonitorButton' not found".
+    $btnId = if ($Module -eq 'Service') { 'NavServiceButton' } else { 'NavStatusButton' }
     $btn = Get-ById $Win $btnId
     Invoke-El $btn $btnId
     Start-Sleep -Milliseconds 900

@@ -47,8 +47,8 @@
 
 namespace winrt::LingwuToolbox::implementation {
 
-// 四个被 XAML 绑定的文本属性。
-enum class RowProp { Name, CpuText, MemText, CountText };
+// 被 XAML 绑定的文本属性。
+enum class RowProp { Name, CpuText, MemText, CountText, IconText, PidText };
 
 inline winrt::hstring RowPropName(RowProp p) noexcept {
     switch (p) {
@@ -56,6 +56,8 @@ inline winrt::hstring RowPropName(RowProp p) noexcept {
         case RowProp::CpuText:   return L"CpuText";
         case RowProp::MemText:   return L"MemText";
         case RowProp::CountText: return L"CountText";
+        case RowProp::IconText:  return L"IconText";
+        case RowProp::PidText:   return L"PidText";
     }
     return L"";
 }
@@ -92,10 +94,12 @@ struct ProcessRow
     ProcessRow() = default;
 
     ProcessRow(winrt::hstring name, winrt::hstring cpuText, winrt::hstring memText,
-               winrt::hstring countText, double cpuNorm, uint64_t memBytes,
+               winrt::hstring countText, winrt::hstring iconText, winrt::hstring pidText,
+               double cpuNorm, uint64_t memBytes,
                uint32_t procs, uint32_t pidStart, uint32_t pidCount)
         : m_name(std::move(name)), m_cpuText(std::move(cpuText)),
           m_memText(std::move(memText)), m_countText(std::move(countText)),
+          m_iconText(std::move(iconText)), m_pidText(std::move(pidText)),
           m_cpuNorm(cpuNorm), m_memBytes(memBytes), m_procs(procs),
           m_pidStart(pidStart), m_pidCount(pidCount) {}
 
@@ -131,6 +135,8 @@ struct ProcessRow
         else if (name == L"CpuText")   prop = RowProp::CpuText;
         else if (name == L"MemText")   prop = RowProp::MemText;
         else if (name == L"CountText") prop = RowProp::CountText;
+        else if (name == L"IconText")  prop = RowProp::IconText;
+        else if (name == L"PidText")   prop = RowProp::PidText;
         else return nullptr;   // 不认识的属性名必须返回 null，别编一个空属性出来
         // 只把「是哪个属性」交给描述对象。行对象由 GetValue 的 target 提供，
         // 所以这里不再需要 const_cast 拿自己的指针 —— 少一条悬空路径。
@@ -162,6 +168,8 @@ struct ProcessRow
     winrt::hstring CpuText()   const { return m_cpuText; }
     winrt::hstring MemText()   const { return m_memText; }
     winrt::hstring CountText() const { return m_countText; }
+    winrt::hstring IconText()  const { return m_iconText; }
+    winrt::hstring PidText()   const { return m_pidText; }
 
     double  CpuNorm()  const { return m_cpuNorm; }
     uint64_t MemBytes() const { return m_memBytes; }
@@ -177,12 +185,15 @@ struct ProcessRow
     // 无脑全量通知会让 x:Bind 每次都去写一遍 TextBlock.Text，
     // 实测那正是内存爬升的主要来源之一。
     void Update(winrt::hstring name, winrt::hstring cpuText, winrt::hstring memText,
-                winrt::hstring countText, double cpuNorm, uint64_t memBytes,
+                winrt::hstring countText, winrt::hstring iconText, winrt::hstring pidText,
+                double cpuNorm, uint64_t memBytes,
                 uint32_t procs, uint32_t pidStart, uint32_t pidCount) {
         if (m_name      != name)      { m_name      = std::move(name);      Notify(L"Name"); }
         if (m_cpuText   != cpuText)   { m_cpuText   = std::move(cpuText);   Notify(L"CpuText"); }
         if (m_memText   != memText)   { m_memText   = std::move(memText);   Notify(L"MemText"); }
         if (m_countText != countText) { m_countText = std::move(countText); Notify(L"CountText"); }
+        if (m_iconText  != iconText)  { m_iconText  = std::move(iconText);  Notify(L"IconText"); }
+        if (m_pidText   != pidText)   { m_pidText   = std::move(pidText);   Notify(L"PidText"); }
         // 下面五个数值字段**不发通知**。XAML 里只绑了上面四个文本属性
         // （GetCustomProperty 也只认这四个名字），排序在 core 层做、右键菜单
         // 只读选中项，所以这五条通知发出去没有任何订阅者会匹配。
@@ -219,6 +230,8 @@ private:
     winrt::hstring m_cpuText;
     winrt::hstring m_memText;
     winrt::hstring m_countText;
+    winrt::hstring m_iconText;
+    winrt::hstring m_pidText;
     double   m_cpuNorm  = 0.0;
     uint64_t m_memBytes = 0;
     uint32_t m_procs    = 0;
@@ -281,6 +294,8 @@ struct RowCustomProperty
             case RowProp::CpuText:   return winrt::box_value(row.CpuText());
             case RowProp::MemText:   return winrt::box_value(row.MemText());
             case RowProp::CountText: return winrt::box_value(row.CountText());
+            case RowProp::IconText:  return winrt::box_value(row.IconText());
+            case RowProp::PidText:   return winrt::box_value(row.PidText());
         }
         return nullptr;
     }

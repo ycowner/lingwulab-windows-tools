@@ -262,9 +262,18 @@
          但本工程显式列了 AdditionalIncludeDirectories，src 已在其中；
          保持普通 ClCompile，走同一套 PCH 与 /utf-8 /WX 设置。
          性能监视模块（core/monitor/）。 -->
+    <!-- 进程 exe 图标提取（ExtractIconEx，按路径缓存）。
+         纯 Win32，走的是已在 AdditionalDependencies 里的 shell32.lib，不新增链接依赖。 -->
+    <ClCompile Include="src\core\monitor\appicon.cpp" />
     <ClCompile Include="src\core\monitor\appnames.cpp" />
     <ClCompile Include="src\core\monitor\autostart.cpp" />
     <ClCompile Include="src\core\monitor\sampler.cpp" />
+    <!-- 系统级指标采集（磁盘剩余 / 磁盘活动 / 电池 / 物理内存 / 主机信息）。
+         纯 Win32 + WinSDK 头文件（winioctl.h / winreg.h），不新增链接依赖：
+         磁盘活动用 IOCTL_DISK_PERFORMANCE 而不是 PDH，正是为了不引入 pdh.lib。 -->
+    <ClCompile Include="src\core\monitor\system_metrics.cpp" />
+    <!-- 健康分：把 CPU / 内存 / 磁盘三档读数合成 0..100。纯计算，无系统调用。 -->
+    <ClCompile Include="src\core\monitor\health.cpp" />
     <!-- 三个 selftest.cpp 同名（core/ 、core/monitor/ 、core/service/ 各一份）。
          MSBuild 默认按**文件名**决定 .obj 的落点，于是这三份会被编译到
          同一个 selftest.obj —— 后写的覆盖先写的，链接进去的是随机一份实现。
@@ -301,6 +310,11 @@
     <!-- 设置窗口（Phase 3）。与 MainWindow 同款：自己的 .idl + .xaml + 代码后置，
          事件全在 .cpp 里挂 lambda，不走 XAML 的 Click= 处理器。 -->
     <ClCompile Include="src\ui\SettingsWindow.xaml.cpp" />
+    <!-- 托盘指标面板（Phase 1）。同样是一套 .idl + .xaml + 代码后置，
+         事件全在 .cpp 里挂 lambda，不走 XAML 的 Click= 处理器。
+         它是一个**独立顶层窗口**：托盘左键弹的就是它，
+         弹出时不抢焦点，主窗口隐藏到托盘时它也能独立出现。 -->
+    <ClCompile Include="src\ui\TrayPanel.xaml.cpp" />
     <!-- ProcessRow 的链接接线：winrt_make_LingwuToolbox_ProcessRow 定义在 cppwinrt
          生成的 ProcessRow.g.cpp 里，必须恰好一个编译单元引入它。放在独立文件里，
          放进 ProcessRow.h 会 LNK2005（该头会被多个 TU 间接包含）。 -->
@@ -328,12 +342,18 @@
     <ClInclude Include="src\platform\single_instance.h" />
     <ClInclude Include="src\platform\callback_guard.h" />
     <ClInclude Include="src\platform\trace.h" />
+    <ClInclude Include="src\core\monitor\appicon.h" />
     <ClInclude Include="src\core\monitor\appnames.h" />
     <ClInclude Include="src\core\monitor\autostart.h" />
+    <ClInclude Include="src\core\monitor\history.h" />
     <ClInclude Include="src\core\monitor\iphlpapi2.h" />
     <ClInclude Include="src\core\monitor\metrics.h" />
+    <ClInclude Include="src\core\monitor\system_metrics.h" />
+    <ClInclude Include="src\core\monitor\health.h" />
     <ClInclude Include="src\core\monitor\sampler.h" />
     <ClInclude Include="src\core\monitor\selftest.h" />
+    <!-- 磁贴 mini 折线的几何计算（纯算术，header-only）。 -->
+    <ClInclude Include="src\core\monitor\sparkline.h" />
     <ClInclude Include="src\core\monitor\terminate.h" />
     <ClInclude Include="src\core\monitor\top10.h" />
     <ClInclude Include="src\core\service\controller.h" />
@@ -350,6 +370,14 @@
     <ClInclude Include="src\ui\shell_types.h" />
     <ClInclude Include="src\ui\CreateServiceWindow.xaml.h" />
     <ClInclude Include="src\ui\SettingsWindow.xaml.h" />
+    <!-- 托盘指标面板的头。与两个页面同款：按值持有实现类型。 -->
+    <ClInclude Include="src\ui\TrayPanel.xaml.h" />
+    <!-- 折线 / 进度条的绘制助手。状态页与托盘面板共用同一份实现 ——
+         两处各写一份迟早会漂移（一个改了线高另一个没改，
+         用户一眼就能看出两个地方的 CPU 曲线「不是同一台机器」）。 -->
+    <ClInclude Include="src\ui\spark_geometry.h" />
+    <!-- 指标读数的格式化助手。同样是状态页与托盘面板共用。 -->
+    <ClInclude Include="src\ui\metric_format.h" />
     <ClInclude Include="src\ui\ProcessRow.h" />
     <ClInclude Include="src\ui\ServiceRow.h" />
   </ItemGroup>
@@ -395,6 +423,13 @@
       <SubType>Code</SubType>
       <DependentUpon>SettingsWindow.xaml</DependentUpon>
     </Midl>
+    <!-- 托盘指标面板同款：x:Class 找不到 runtimeclass 会报 WMC1002。
+         本文件必须保持纯 ASCII（midl 按系统 ANSI 码页 936 读，中文报 C4819，
+         而本工程开了 /WX）。 -->
+    <Midl Include="src\ui\TrayPanel.idl">
+      <SubType>Code</SubType>
+      <DependentUpon>TrayPanel.xaml</DependentUpon>
+    </Midl>
     <!-- ProcessRow 是 runtimeclass 而不是普通结构体：
          x:Bind 只认元数据里的类型，普通结构体会报 WMC0909/WMC1111。
          它没有对应的 .xaml，因此没有 DependentUpon。
@@ -428,6 +463,10 @@
       <SubType>Designer</SubType>
     </Page>
     <Page Include="src\ui\SettingsWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="src\ui\TrayPanel.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>

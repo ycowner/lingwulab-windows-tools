@@ -169,6 +169,43 @@
                 </ComboBox>
             </Grid>
 
+            <!-- 6. 保持常亮 -->
+            <!-- 这两项与托盘指标面板里的动作按钮是**同一个开关**的两处入口。
+                 面板上的按钮是「随手点一下」，这里是「打开设置看一眼当前状态」。
+                 两边写的是同一个 settings 字段，改一处另一边立刻跟着变。 -->
+            <Grid Margin="0,12,0,0" ColumnDefinitions="*,Auto">
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="保持常亮" Style="{ThemeResource BodyTextBlockStyle}" />
+                    <TextBlock Text="阻止电脑自动休眠与息屏，跨重启保持"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.65"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+                <ToggleSwitch x:Name="KeepAwakeSwitch" Grid.Column="1"
+                              VerticalAlignment="Center" />
+            </Grid>
+
+            <!-- 7. 清理屏时锁定输入 -->
+            <!-- 【为什么默认开】
+                 清理屏的用途就是挡住误触 —— 演示、投屏、录屏时手会不自觉地
+                 碰到键盘鼠标，把当前窗口切走。不锁输入的话，这个功能一半的
+                 时间是在跟误触打架。
+                 【为什么还要写清楚后果】
+                 锁定输入（BlockInput）会把整台机器的键鼠输入锁住，
+                 只有本程序还能收到 ESC。所以这里把出口写明白，
+                 也留一个开关给「需要边清理屏边操作别的程序」的场景。 -->
+            <Grid Margin="0,12,0,0" ColumnDefinitions="*,Auto">
+                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="清理屏时锁定输入" Style="{ThemeResource BodyTextBlockStyle}" />
+                    <TextBlock Text="默认开启：清理屏幕时锁住键盘鼠标，按 ESC 退出"
+                               Style="{ThemeResource CaptionTextBlockStyle}"
+                               Opacity="0.65"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+                <ToggleSwitch x:Name="CleanScreenLockSwitch" Grid.Column="1"
+                              VerticalAlignment="Center" />
+            </Grid>
+
             <!-- 口径说明。内存数字的口径必须在界面上说清楚，
                  否则用户拿任务管理器对数会以为算错了。 -->
             <TextBlock Text="内存口径为「专用提交」，与任务管理器「进程」页的私有工作集略有差异。"

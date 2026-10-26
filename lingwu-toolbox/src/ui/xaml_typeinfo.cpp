@@ -41,4 +41,7 @@
 // 但仍然是 XAML 页，类型表里照样有一份。
 #include "MonitorPage.xaml.h"
 
+// 托盘指标面板同理 —— 它是一个 XAML 顶层窗口，类型表里照样有一份。
+#include "TrayPanel.xaml.h"
+
 #include "XamlTypeInfo.g.cpp"

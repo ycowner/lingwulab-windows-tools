@@ -40,6 +40,17 @@
 #     tray     -- the window is hidden and the process stays in the tray for
 #                 three minutes. A background timer still ticks, so this is
 #                 where a slow leak would show up.
+#     traypanel-- the tray metrics panel is opened and closed 30 times. The
+#                 panel is constructed ONCE and only hidden on close, precisely
+#                 because recreating a WinUI 3 Window leaks native resources on
+#                 every round (see TrayPanel::ShowPanel / HidePanel). This
+#                 scenario is the regression test for that decision.
+#
+#   Phase 1 note on the "switch" scenario: the plan asked for "six pages
+#   switched 20 times", but four of the six tabs ship as a disabled
+#   "planned" placeholder, so there is nothing to switch TO. The scenario
+#   therefore switches between the two live pages; whether the other four are
+#   really disabled is asserted functionally by tools/monitor/nav.ps1.
 #
 # HOW LEAK AND WARM-UP ARE TOLD APART
 #
@@ -70,11 +81,15 @@ param(
     [int]$HideShowRounds = 20,
     [int]$SettingsRounds = 30,
     [int]$TraySeconds = 180,
+    [int]$TrayPanelRounds = 30,
     [string]$OutCsv = "$env:TEMP\lingwu_toolbox_mem_baseline.csv"
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'uia.ps1')
+# tray.ps1 adds the tray-icon helpers (open the overflow flyout, invoke the
+# icon). The traypanel scenario needs them.
+. (Join-Path $PSScriptRoot 'tray.ps1')
 Require-Elevated -ScriptPath $PSCommandPath -ScriptArgs $PSBoundParameters
 $Exe = Resolve-ToolboxExe $Exe
 
@@ -299,6 +314,34 @@ try {
     }
     [void][MemBaseWin]::ShowWindow($hwnd, 5)              # SW_SHOW
     Add-Result 'tray' $rows
+
+    # --------------------------------------------------------- traypanel ----
+    Write-Host ''
+    Write-Host ("--- scenario: tray panel open/close x{0} ---" -f $TrayPanelRounds)
+    #
+    # The tray panel is a top-level WinUI 3 Window. A closed WinUI 3 Window
+    # cannot be reused, and creating a new one per open leaks native
+    # resources linearly -- so the panel is built ONCE and only hidden on
+    # close. This scenario is the regression test for that decision: if the
+    # panel were rebuilt per round, the private memory would climb by a step
+    # every round and the handle count would grow with it.
+    $rows = New-Object System.Collections.Generic.List[object]
+    for ($i = 1; $i -le $TrayPanelRounds; $i++) {
+        $ok = Invoke-ToolboxTrayButton
+        if (-not $ok) {
+            Write-Host "  round ${i}: tray button not invocable -- skipping the rest of the scenario"
+            break
+        }
+        Start-Sleep -Milliseconds 700
+        $r = Add-Sample 'traypanel' ("open#{0}" -f $i)
+        if ($r) { $rows.Add($r) }
+        # Toggle it closed again (the left click is a toggle).
+        [void](Invoke-ToolboxTrayButton)
+        Start-Sleep -Milliseconds 700
+        $r = Add-Sample 'traypanel' ("closed#{0}" -f $i)
+        if ($r) { $rows.Add($r) }
+    }
+    Add-Result 'traypanel' $rows
 }
 finally {
     Stop-App

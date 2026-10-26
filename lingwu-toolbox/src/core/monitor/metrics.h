@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+#include "history.h"
+#include "system_metrics.h"
+
 namespace lingwu {
 namespace core {
 namespace monitor {
@@ -54,6 +57,34 @@ struct Snapshot {
     ULONGLONG tickMs     = 0;     // 本次采样时刻（GetTickCount64）
     uint32_t coreCount   = 1;
     bool     memIsPrivateWorkingSet = false;  // PDH 不可用时退化为私有提交
+
+    // ---- 系统级指标（状态页的 bento 磁贴用）----
+    //
+    // 【为什么放在 Snapshot 里，而不是让 UI 自己去查】
+    // Snapshot 是采样线程与 UI 线程之间**唯一**的数据通道，且已经有一套
+    // 锁 + 脏标志的同步机制。磁贴要的数据如果让 UI 线程各自去查，
+    // 就等于开了第二条跨线程通道 —— 读注册表与发 IOCTL 都得自己再同步一遍。
+    // 放进 Snapshot 后，UI 侧读数据的方式与读进程列表完全一致。
+    DiskSpaceInfo    diskSpace;
+    DiskActivityInfo diskActivity;
+    BatteryInfo      battery;
+    MemoryInfo       memory;
+    HostInfo         host;
+
+    // 健康分。由上面三项在采样线程里算好 —— 它是个派生量，
+    // 放 UI 侧算就会有两份算法（UI 一份、selftest 一份），迟早对不上。
+    int         healthScore = 0;
+    std::wstring healthGrade;
+    bool        healthValid = false;
+
+    // ---- 趋势序列（磁贴画 mini 折线用）----
+    //
+    // 【为什么这里带一份「历史」而不是让 UI 自己攒】
+    // 历史必须在**采样线程**里按采样节奏 push —— UI 的刷新节奏和采样节奏
+    // 本来就不一样（UI 有节流、还有窗口最小化时停更），
+    // 让 UI 自己攒就会丢点或插重复点。
+    // History 用定长数组，拷贝它不产生堆分配。
+    History history;
 };
 
 // ---------------------------------------------------------------- 排序

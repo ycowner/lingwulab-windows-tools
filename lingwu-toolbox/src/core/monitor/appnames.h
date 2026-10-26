@@ -20,6 +20,17 @@ namespace monitor {
 std::wstring FriendlyAppName(DWORD pid, ULONGLONG createTime,
                              const std::wstring& exeName);
 
+// 取进程的 exe 完整路径（进程内缓存，按 pid + createTime 定位）。
+//
+// 空串表示取不到（权限不足 / 进程已退出 / 本帧预算用尽）。
+//
+// 与 FriendlyAppName **共用同一份 pid 缓存**：两者一起用时，
+// 同一个进程只会 OpenProcess 一次 —— 不会因为多问一句路径就多开一次句柄。
+// 路径解析的预算与显示名解析的预算是分开的两份（见 appnames.cpp），
+// 因为「问路径」很便宜（一次 QueryFullProcessImageNameW），
+// 而「问显示名」要读版本资源、真正碰磁盘。
+std::wstring ProcessImagePath(DWORD pid, ULONGLONG createTime);
+
 // 每帧绘制开始时调一次，重置本帧的解析预算并推进淘汰计时。
 void AppNamesBeginFrame();
 

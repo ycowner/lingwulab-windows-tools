@@ -29,10 +29,15 @@
 #include <thread>
 #include "core/monitor/appnames.h"
 #include "core/monitor/autostart.h"
+#include "core/monitor/sparkline.h"
 #include "core/monitor/terminate.h"
 #include "core/monitor/top10.h"
 #include "platform/callback_guard.h"
 #include "platform/trace.h"
+// 折线 / 进度条的画法。与托盘指标面板共用同一份实现。
+#include "ui/spark_geometry.h"
+// 指标读数的格式化。与托盘指标面板共用同一份实现。
+#include "ui/metric_format.h"
 using namespace winrt;
 using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Controls;
@@ -48,6 +53,10 @@ namespace winrt::LingwuToolbox::implementation {
 // 所以 LoadSettings / SaveSettings 必须写全限定名 lingwu::core::，
 // 写 core:: 会解析到 lingwu::core::monitor 里去 —— 那里已经没有这两个函数了。
 namespace core = lingwu::core::monitor;
+// ui 是**跨页面共用**的 XAML 绘制助手（目前只有折线与进度条）。
+// 与 core 分开命名：core 是数据层，ui 是界面层，混在一个别名里会看不出
+// 「这个函数到底算数据还是画东西」。
+namespace ui = lingwu::ui;
 namespace {
 // 大小写无关的子串匹配（搜索框用）
 bool ContainsCI(std::wstring hay, const std::wstring& needle) {
@@ -68,11 +77,40 @@ std::wstring LowerCopy(std::wstring s) {
     for (auto& c : s) c = static_cast<wchar_t>(::towlower(c));
     return s;
 }
-// 行高必须与 MonitorPage.xaml 里 DataTemplate 的 <Grid Height="32"> 保持一致。
+// 应用名首字母（拉丁字母转大写）。进程行左侧的图标徽章用。
+//
+// 【为什么是首字母而不是 exe 图标】
+// 真正的 exe 图标要通过 {Binding} 交给 Image.Source，那要求行模型里有一个
+// 类型为 ImageSource 的属性；而在 ProcessRow.idl 里声明 XAML 类型就得 import
+// SDK 的 idl，那正是那个文件顶上写的 MIDL2003 redefinition 风暴。
+// 首字母徽章不需要任何新类型，零风险；视觉形态与拍板的对照图一致。
+std::wstring FirstLetter(const std::wstring& name) {
+    if (name.empty()) return L"?";
+    const wchar_t c = name[0];
+    return std::wstring(1, static_cast<wchar_t>(::towupper(c)));
+}
+// ---------------------------------------------------------------- 磁贴格式化
+//
+// 这些格式化助手**不在本文件里** —— 它们归 ui/metric_format.h，
+// 托盘指标面板的磁贴画的是同一批读数，两处各写一份迟早出现
+// 「状态页写「13 GB / 31 GB」而托盘面板写「13.0GB / 31GB」」这种不一致：
+// 同一台机器、同一个口径，两种写法会让用户以为这两个数字不是一回事。
+
+// 折线与进度条的画法**不在本文件里** —— 它归 ui/spark_geometry.h，
+// 托盘指标面板的磁贴画的是同一套东西，两处各写一份迟早会漂移
+// （状态页改了线高而面板没改，用户一眼就能看出两个地方的 CPU 曲线
+//  「不是同一台机器」）。本文件只管喂数据。
+//
+// 行高必须与 MonitorPage.xaml 里 DataTemplate 的 <Grid Height="40"> 保持一致。
 // 右键命中测试是**算术**定位：VisualTreeHelper::GetChildren 在这版投影里不存在
 //（只有 GetChildrenCount / GetParent），没法遍历已实现的行容器去算包围盒，
 // 所以这里用「内容坐标 y / 行高」直接推出下标。这是本文件与 XAML 之间唯一的耦合点。
-constexpr double kRowHeight = 32.0;
+//
+// 【为什么从 32 变成 40】
+// 进程表多了一列 26×26 的图标徽章，32 DIP 的行高塞不下它加上下留白。
+// 行高一变，命中测试的算术定位跟着变 —— 两边必须同时改，
+// 否则点右键会落到相邻行（症状是「结束任务」结束了另一个应用）。
+constexpr double kRowHeight = 40.0;
 
 // 列表滚动偏移的读写 helper 曾在这里（ScrollPosOf / RestoreScrollPos /
 // RestoreScrollLater），已删除。
@@ -253,6 +291,12 @@ void MonitorPage::WireEvents() {
         Refresh();
     });
     SettingsButton().Click([this](auto&&, auto&&) { OnOpenSettings(); });
+    // 磁贴的宽度随窗口变化，进度条与折线都要跟着重算。
+    // 挂 SizeChanged 而不是 Loaded：布局完成之后 ActualWidth 才有效，
+    // 而窗口尺寸变化时又必须重算（进度条是按比例算出来的绝对宽度）。
+    // 这里不会形成布局循环 —— 进度条与折线都在固定高度的容器里，
+    // 改它们的尺寸不会反过来改磁贴区的大小。
+    TileArea().SizeChanged([this](auto&&, auto&&) { UpdateTiles(); });
     // 行右键菜单在代码里建：Click 才能用 lambda，不必进 IDL；
     // 弹出由**外壳**的窗口子类驱动（为什么非走 Win32 子类不可，
     // 见文件上方 HitTestRow 上面的注释）。
@@ -327,17 +371,28 @@ void MonitorPage::OnTimerTick() {
     Refresh();
 }
 void MonitorPage::Refresh() {
+    // 快照**总是**更新，即使页面不可见。
+    //
+    // 【为什么不能跟着可见性一起跳过】
+    // 托盘指标面板要在主窗口藏在托盘里的时候也显示当前数据，
+    // 它拿的是本页面持有的这份快照。快照停在切走那一刻的话，
+    // 托盘面板显示的就是过期数据 —— 而托盘面板恰恰是**窗口不可见时**
+    // 唯一还在给人看的界面。
+    //
+    // 【为什么这不是性能问题】
+    // 拷贝本身很便宜（每秒一次、几十 KB）；真正贵的是 RebuildRows
+    // —— 它会作废并重建列表容器。跳过的只是后者。
+    sampler_.Lock();
+    snapshot_ = sampler_.View();   // 深拷贝，之后全程在锁外操作
+    sampler_.Unlock();
+
     // 窗口不可见时**不做 UI 刷新**。
     //
     // 【为什么】隐藏到托盘之后，那个 100 ms 的 DispatcherQueueTimer 照旧在跑，
-    // 而 Refresh() 会一路走到 RebuildRows() 里的 SetAt() —— 那会作废并重建
+    // 而 RebuildRows() 会一路走到 SetAt() —— 那会作废并重建
     // 列表容器。窗口看不见时，这些工作一帧也用不上，却照付 CPU 与容器 churn，
     // 与「CPU 自耗低」这条预算直接冲突。实测隐藏/显示每轮约 0.7 MB 私有内存
     // 增量，里面就有很大一块来自这种看不见的重建。
-    //
-    // 【数据会不会过期】不会。采样线程完全不受影响，数据一直在采；
-    // ShowAndActivate() 里窗口一恢复可见就补一次全量 Refresh()，
-    // 显示出来时拿到的就是此刻的快照。
     //
     // 顺带的好处：开机自启的静默模式（窗口建了但不 Activate）也走这条路，
     // 以前它同样在后台每秒重建一个没人看的列表。
@@ -349,14 +404,12 @@ void MonitorPage::Refresh() {
     if (Visibility() != Visibility::Visible) return;
     if (!hostVisible_) return;
 
-    sampler_.Lock();
-    snapshot_ = sampler_.View();   // 深拷贝，之后全程在锁外操作
-    sampler_.Unlock();
     // 兜住并落 trace。列表填充会同步实例化行容器，XAML 侧的失败在这套
     // 依赖栈下表现为「异常被 stow 后重抛成 STATUS_STOWED_EXCEPTION」，
     // 事件日志只给得出 CoreMessagingXP.dll，完全指不到真实成因。
     // 这里失败一次还能看到 hresult 与消息，否则只表现为「列表不刷新」。
     try {
+        UpdateTiles();
         RebuildRows();
         UpdateStatusBar();
     } catch (winrt::hresult_error const& e) {
@@ -388,7 +441,7 @@ void MonitorPage::RebuildRows() {
     core::BuildViews(view, aggregate_, sortMode_);
     // 本帧每一行的内容 + 稳定身份键。
     struct RowData {
-        winrt::hstring name, cpuText, memText, countText;
+        winrt::hstring name, cpuText, memText, countText, iconText, pidText;
         double   cpuNorm  = 0.0;
         uint64_t memBytes = 0;
         uint32_t procs    = 0;
@@ -422,6 +475,12 @@ void MonitorPage::RebuildRows() {
         d.cpuText   = to_hstring(core::FormatCpu(a.cpuNorm).c_str());
         d.memText   = to_hstring(core::FormatBytes(a.privWorkSet).c_str());
         d.countText = to_hstring(std::to_wstring(a.procCount).c_str());
+        d.iconText  = to_hstring(FirstLetter(a.name).c_str());
+        // PID：这一行所代表的那个进程。聚合口径下取组内第一个
+        // （也就是组里 pid 最小的那个，与显示名的取名规则一致）。
+        d.pidText   = to_hstring(a.pidCount
+                                     ? std::to_wstring(view.pids[a.pidStart]).c_str()
+                                     : L"");
         d.cpuNorm   = a.cpuNorm;
         d.memBytes  = a.privWorkSet;
         d.procs     = a.procCount;
@@ -501,7 +560,7 @@ void MonitorPage::RebuildRows() {
         } else {
             row = winrt::make<ProcessRow>();
         }
-        row.Update(d.name, d.cpuText, d.memText, d.countText,
+        row.Update(d.name, d.cpuText, d.memText, d.countText, d.iconText, d.pidText,
                    d.cpuNorm, d.memBytes, d.procs, d.pidStart, d.pidCount);
         rowPool_.push_back(row);
     }
@@ -607,6 +666,123 @@ void MonitorPage::RebuildRows() {
     }
 }
 
+// ---------------------------------------------------------------- bento 磁贴
+//
+// 【为什么磁贴单独一个刷新函数，而不是塞进 UpdateStatusBar】
+// 磁贴是**系统级指标**，状态栏是**进程表**的汇总，两者口径不同
+// （磁贴的内存是物理内存占用，状态栏的是各进程私有提交之和）。
+// 混在一个函数里迟早会把两个口径搞混，而那种错是「数字看着合理」的错。
+void MonitorPage::UpdateTiles() {
+    const core::Snapshot& s = snapshot_;
+
+    // ---- 健康 ----
+    if (s.healthValid) {
+        TileHealthValue().Text(to_hstring(std::to_wstring(s.healthScore).c_str()));
+        TileHealthUnit().Text(to_hstring(s.healthGrade.c_str()));
+        TileHealthSub().Text(to_hstring(ui::HealthComment(s.healthScore).c_str()));
+    } else {
+        TileHealthValue().Text(L"—");
+        TileHealthUnit().Text(L"");
+        TileHealthSub().Text(L"健康分采集中");
+    }
+    TileHealthBadge().Text(to_hstring(ui::UptimeBadge(s.host.uptimeSeconds).c_str()));
+    ui::SetSpark(TileHealthSparkHost(), TileHealthSpark(), s.history.health, 10.0);
+
+    // ---- CPU ----
+    // 整机占用率取「历史序列的最后一个点」：
+    // 采样线程每周期 push 一次，推的就是这一周期算出来的整机占用率，
+    // 与健康分用的是同一个数 —— 两块磁贴不会对不上。
+    const double cpuPercent = s.history.cpu.Last();
+    TileCpuValue().Text(to_hstring(std::to_wstring(
+        static_cast<long long>(cpuPercent + 0.5)).c_str()));
+    TileCpuBadge().Text(to_hstring((std::to_wstring(s.coreCount) + L" 核").c_str()));
+    TileCpuSub().Text(to_hstring(core::Ellipsize(s.host.cpuName, 30).c_str()));
+    ui::SetSpark(TileCpuSparkHost(), TileCpuSpark(), s.history.cpu, 10.0);
+
+    // ---- 内存 ----
+    // 口径是**物理内存占用**（与状态栏的「各进程私有提交之和」不是一回事），
+    // 两者各自标注，不混成一个数。
+    if (s.memory.totalBytes > 0) {
+        TileMemoryValue().Text(to_hstring(std::to_wstring(
+            static_cast<long long>(s.memory.usedPercent + 0.5)).c_str()));
+        TileMemoryBadge().Text(to_hstring(ui::MemoryBadge(s.memory.usedPercent).c_str()));
+        TileMemorySub().Text(to_hstring(
+            (ui::GbText(s.memory.totalBytes - s.memory.availableBytes) + L" GB / " +
+             ui::GbText(s.memory.totalBytes) + L" GB").c_str()));
+        ui::SetBar(TileMemoryBarHost(), TileMemoryFill(), s.memory.usedPercent / 100.0);
+    } else {
+        TileMemoryValue().Text(L"—");
+        TileMemoryBadge().Text(L"");
+        TileMemorySub().Text(L"取不到");
+    }
+
+    // ---- 磁盘剩余 ----
+    if (s.diskSpace.valid && s.diskSpace.totalBytes > 0) {
+        const double total = static_cast<double>(s.diskSpace.totalBytes);
+        const double used  = total - static_cast<double>(s.diskSpace.freeBytes);
+        const double usedPct = used * 100.0 / total;
+        const double freePct = 100.0 - usedPct;
+        TileDiskFreeValue().Text(to_hstring(ui::GbText(s.diskSpace.freeBytes).c_str()));
+        TileDiskFreeBadge().Text(to_hstring((ui::GbText(s.diskSpace.totalBytes) + L" GB").c_str()));
+        TileDiskFreeSub().Text(to_hstring(
+            (ui::GbText(static_cast<uint64_t>(used)) + L" GB 已用 · " +
+             std::to_wstring(static_cast<long long>(usedPct + 0.5)) + L"%").c_str()));
+        // 进度条画的是**剩余**比例：这块磁贴讲的是「还剩多少」。
+        ui::SetBar(TileDiskFreeBarHost(), TileDiskFreeFill(), freePct / 100.0);
+    } else {
+        TileDiskFreeValue().Text(L"—");
+        TileDiskFreeBadge().Text(L"");
+        TileDiskFreeSub().Text(L"取不到");
+    }
+
+    // ---- 网络 ----
+    {
+        std::wstring value, unit;
+        ui::SpeedParts(s.net.downBps, value, unit);
+        TileNetValue().Text(to_hstring(value.c_str()));
+        TileNetUnit().Text(to_hstring(unit.c_str()));
+        TileNetBadge().Text(to_hstring(s.net.nic.empty() ? L"无网卡" : s.net.nic.c_str()));
+        TileNetSub().Text(to_hstring(
+            (L"上传 " + core::FormatSpeed(s.net.upBps)).c_str()));
+        ui::SetSpark(TileNetSparkHost(), TileNetSpark(), s.history.netDown, 0.0);
+    }
+
+    // ---- 磁盘活动 ----
+    if (s.diskActivity.valid) {
+        TileDiskActValue().Text(to_hstring(std::to_wstring(
+            static_cast<long long>(s.diskActivity.percentBusy + 0.5)).c_str()));
+        TileDiskActBadge().Text(to_hstring(
+            s.diskSpace.volume.empty() ? L"磁盘" : s.diskSpace.volume.c_str()));
+        TileDiskActSub().Text(to_hstring(
+            (L"读 " + core::FormatSpeed(s.diskActivity.readBytesPerSec) +
+             L" · 写 " + core::FormatSpeed(s.diskActivity.writeBytesPerSec)).c_str()));
+        ui::SetSpark(TileDiskActSparkHost(), TileDiskActSpark(), s.history.disk, 10.0);
+    } else {
+        TileDiskActValue().Text(L"—");
+        TileDiskActBadge().Text(L"");
+        TileDiskActSub().Text(L"取不到");
+    }
+
+    // ---- 电池 ----
+    // 台式机上 present 恒为 false —— 显示「本机无电池」而不是 0%。
+    // 「没有电池」和「电池没电」是两件事。
+    if (s.battery.present) {
+        TileBatteryValue().Text(to_hstring(std::to_wstring(s.battery.percent).c_str()));
+        TileBatteryUnit().Text(L"%");
+        TileBatteryBadge().Text(s.battery.charging ? L"充电中" : L"电池");
+        const std::wstring remain = (s.battery.secondsLeft > 0)
+            ? ui::RemainingText(s.battery.secondsLeft) : std::wstring(L"剩余时间未知");
+        TileBatterySub().Text(to_hstring(remain.c_str()));
+        ui::SetBar(TileBatteryBarHost(), TileBatteryFill(),
+               s.battery.percent / 100.0);
+    } else {
+        TileBatteryValue().Text(L"—");
+        TileBatteryUnit().Text(L"");
+        TileBatteryBadge().Text(L"");
+        TileBatterySub().Text(L"本机无电池");
+    }
+}
+
 // ---------------------------------------------------------------- 状态栏
 
 void MonitorPage::UpdateStatusBar() {
@@ -691,23 +867,51 @@ void MonitorPage::OnListSelectionChanged(IInspectable const& /*sender*/,
     selectedPids_.clear();
     selectedName_.clear();
     auto sel = ProcessList().SelectedItem();
-    if (!sel) return;
+    if (!sel) {
+        // 【为什么这里要落 trace】
+        // 「选中项没了」是个**静默**状态：selectedPids_ 被清空，
+        // 而 OnEndTask 看到空的就直接 return —— 用户那边表现为
+        // 「点了结束任务，什么都没发生，也没有提示」。
+        // 不落 trace 就只能靠猜是哪一步丢的。
+        LINGWU_TRACE("MonitorPage: selection cleared (no SelectedItem)");
+        return;
+    }
     const auto row = sel.try_as<winrt::LingwuToolbox::ProcessRow>();
     if (!row) return;
 
     // rowPids_ 与列表同批重建，但刷新与选中回调可能交错，
     // 所以这里仍然要校验下标落在范围内再取。
     const size_t end = static_cast<size_t>(row.PidStart()) + row.PidCount();
-    if (end > rowPids_.size()) return;
+    if (end > rowPids_.size()) {
+        LINGWU_TRACE("MonitorPage: selection cleared (pid range out of bounds: end=%zu size=%zu)",
+                     end, rowPids_.size());
+        return;
+    }
 
     selectedName_ = row.Name().c_str();   // 不能用 winrt::to_string：那是窄串
     selectedPids_.assign(rowPids_.begin() + row.PidStart(), rowPids_.begin() + end);
 }
 
 void MonitorPage::OnEndTask() {
-    if (selectedPids_.empty()) return;
+    // 目标取**右键命中时存下来的快照**，而不是此刻的选中项。
+    //
+    // 「结束任务」这个菜单项属于你右键的那一行。活状态（selectedPids_）
+    // 会因为列表重排而在菜单点下去之前被清空 —— 那时 OnEndTask 会静默
+    // return，用户看到的是「点了结束任务，什么都没发生」。
+    // 快照为空（理论上不该发生：菜单是从命中测试弹出来的）才退回活状态。
+    const bool useSnapshot = !contextPids_.empty();
+    const std::vector<DWORD>& target = useSnapshot ? contextPids_ : selectedPids_;
+    const std::wstring& targetName = useSnapshot ? contextName_ : selectedName_;
 
-    const std::wstring name = selectedName_.empty() ? L"该进程" : selectedName_;
+    if (target.empty()) {
+        // 静默 return 是最坏的一种失败：用户点了「结束任务」，
+        // 既没有确认框也没有任何提示，看起来像按钮坏了。
+        // 必须落 trace，否则这条路径在验收板上完全隐形。
+        LINGWU_TRACE("MonitorPage: end-task ignored (no target pids)");
+        return;
+    }
+
+    const std::wstring name = targetName.empty() ? L"该进程" : targetName;
 
     // Title / Content 是 IInspectable，必须 box_value（见 FillNotice 里的注释）。
     confirm_.XamlRoot(RootGrid().XamlRoot());
@@ -721,7 +925,7 @@ void MonitorPage::OnEndTask() {
 
     // 这版 SDK 的 cppwinrt 投影头里没有 IAsyncOperation::then，
     // 所以确认流程走 PrimaryButtonClick 事件驱动（处理器在 WireEvents 里挂一次）。
-    pendingPids_ = selectedPids_;
+    pendingPids_ = target;
     pendingName_ = name;
     // 闸门必须先拿到独占权，拿不到说明已经有对话框在途 —— 这时不能再弹，
     // 否则两个 ContentDialog 挤掉（症状：对话框一闪就没了，窗口也不动）。
@@ -763,7 +967,9 @@ void MonitorPage::OnOpenSettings() {
         // 已经开着的话，这里只把**当前**生效值重新灌进去，
         // 否则显示的是上次打开时的旧状态（用户会以为刚才的修改没保存）。
         settingsWindow_.LoadFrom(aggregate_, sortMode_, settings_->intervalMs,
-                                 settings_->autoStart, settings_->closeAction);
+                                 settings_->autoStart, settings_->closeAction,
+                                 settings_->keepAwake,
+                                 settings_->cleanScreenLockInput);
         // 新一轮：准备接收结果（LoadFrom 已把 accepted_ 复位）。
         settingsResultConsumed_ = false;
 
@@ -807,6 +1013,12 @@ void MonitorPage::ApplySettingsResult(winrt::LingwuToolbox::SettingsWindow const
     // 「关闭窗口时」的档位。这是**整个程序**的关闭行为（不是本页的），
     // 但设置窗口住在本页，所以值从本页取、再经共享的 settings_ 写回。
     settings_->closeAction = w.ResultCloseAction();
+    // 「保持常亮」与「清理屏时锁定输入」。这两个是**托盘面板**的动作开关，
+    // 但设置窗口住在本页，所以同样从这里写进共享的 settings_。
+    // 托盘面板有一个 10 秒的常亮续申请计时器，读这两个字段并落到系统上，
+    // 所以这里改完不必立刻通知它 —— 最迟 10 秒内生效。
+    settings_->keepAwake = w.ResultKeepAwake();
+    settings_->cleanScreenLockInput = w.ResultCleanScreenLockInput();
     // autoStart 的注册表写入已在设置窗口里做完并回读校验，这里只同步到 settings_。
     // ini 不落 AutoStart —— 注册表才是唯一事实源（见 settings.cpp 的注释）。
 
@@ -915,6 +1127,33 @@ bool MonitorPage::HitTestRow(winrt::Windows::Foundation::Point const& clientPt) 
     const int idx = static_cast<int>(y / kRowHeight);
     if (idx < 0 || idx >= contextRowCount_) return false;
     ProcessList().SelectedIndex(idx);
+    // 命中了哪一行，落一条 trace。
+    //
+    // 【为什么要记】菜单弹出之后到用户点「结束任务」之间可能隔着好几秒，
+    // 而列表每秒都在刷新重排 —— 这段时间里选中项可能被换掉。
+    // 「点了没反应」这类症状要靠这几条 trace 才能定位到具体哪一步丢的。
+    LINGWU_TRACE("MonitorPage: context menu hit row=%d", idx);
+
+    // 把命中行的 pid 区间**当场拷出来**。
+    //
+    // 为什么不能用「当前选中项」：菜单弹出到用户点「结束任务」之间可能隔着
+    // 好几秒，而列表每秒都在刷新重排 —— 这段时间里被选中的那一行可能被换掉
+    // 或删掉，于是 selectedPids_ 被清空，「结束任务」变成点了没反应。
+    // 菜单项属于你右键的那一行，所以命中时就把它存成快照。
+    //
+    // rowPool_ 与列表同序（两者都在 UI 线程上更新，不会互相插队），
+    // row 的 PidStart/PidCount 指向 rowPids_ 的对应区间。
+    contextPids_.clear();
+    contextName_.clear();
+    if (static_cast<size_t>(idx) < rowPool_.size()) {
+        const auto& row = rowPool_[static_cast<size_t>(idx)];
+        const size_t end = static_cast<size_t>(row.PidStart()) + row.PidCount();
+        if (end <= rowPids_.size()) {
+            contextPids_.assign(rowPids_.begin() + row.PidStart(),
+                                rowPids_.begin() + end);
+            contextName_ = row.Name().c_str();
+        }
+    }
     // ShowAt 的坐标是**相对 target（列表）**的逻辑坐标。
     contextMenu_.ShowAt(ProcessList(), winrt::Windows::Foundation::Point{
                                           logical.X - origin.X, logical.Y - origin.Y });

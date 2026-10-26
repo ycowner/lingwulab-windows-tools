@@ -98,6 +98,18 @@ struct MonitorPage : MonitorPageT<MonitorPage> {
     // 返回 true 表示已处理（菜单已弹出）。
     bool HitTestRow(winrt::Windows::Foundation::Point const& clientPt);
 
+    // 当前快照的一份拷贝。**托盘指标面板**用它取数 ——
+    // 面板是独立窗口，拿不到本页面的内部状态，只能通过外壳转发。
+    //
+    // 【为什么是拷贝而不是引用】
+    // 采样线程随时会写下一份快照，UI 线程读的时候不能拿到半个写完的对象。
+    // 拷贝一份是最省事的同步手段（面板每秒拷一次，代价可以忽略）。
+    //
+    // 【为什么是 public】
+    // 外壳持有的是本类的**实现类型**，可以调任意 public C++ 方法；
+    // 这个方法不需要进 .idl（不构成公开 WinRT API）。
+    lingwu::core::monitor::Snapshot CurrentSnapshot() const { return snapshot_; }
+
 private:
     // ---- 启动装配 ----
     void WireEvents();
@@ -108,6 +120,10 @@ private:
     void Refresh();
     void RebuildRows();
     void UpdateStatusBar();
+    // bento 磁贴区（8 块）。系统级指标，与进程表分开刷新 ——
+    // 两者的内存口径不同（磁贴是物理内存占用，状态栏是各进程私有提交之和），
+    // 混在一个函数里迟早会把两个口径搞混，而那种错是「数字看着合理」的错。
+    void UpdateTiles();
     void UpdateSortIndicators();
     // 用户主动改变排序/筛选后调用：清掉重排节流的计时，让下一帧立刻应用新顺序。
     // 节流是为「CPU 数值每秒自然抖动」设计的，不该让用户的明确操作也等 3 秒。
@@ -313,6 +329,24 @@ private:
 
     std::vector<DWORD> selectedPids_{};
     std::wstring selectedName_{};
+
+    // 右键菜单命中的那一行的目标，在**命中当场**拷出来。
+    //
+    // 【为什么不能只靠 selectedPids_】
+    // 「结束任务」这个菜单项属于**你右键的那一行**，而不是「此刻列表里
+    // 选中的是哪一行」。可这两者并不等价：
+    //   · 菜单弹出到用户点「结束任务」之间可能隔着好几秒；
+    //   · 而列表每秒都在刷新重排，这段时间里被选中的那一行可能被换掉或删掉
+    //     （内存排名一变动，第一行就换人了）；
+    //   · 一旦 SelectedItem() 变成空，OnListSelectionChanged 会把
+    //     selectedPids_ 清空，OnEndTask 于是**静默 return** ——
+    //     用户那边表现为「点了结束任务，既没有确认框也没有任何提示」。
+    //
+    // 这个缺陷是实测到的：验收脚本连跑 8 次有 1 次复现「点了没反应」，
+    // trace 里能看到 end-task ignored。
+    // 修法就是让菜单项绑定一个**快照**而不是活状态。
+    std::vector<DWORD> contextPids_{};
+    std::wstring contextName_{};
 
     // 确认弹窗与「结束任务」按钮之间的一次性交接。
     // 之所以要暂存成员而不是用 lambda 捕获：这版 SDK 的 cppwinrt 投影头里
