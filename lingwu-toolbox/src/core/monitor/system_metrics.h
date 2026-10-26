@@ -42,11 +42,29 @@ struct DiskActivityInfo {
     uint64_t writeBytesPerSec = 0;
 };
 
-// 电池。台式机上 present 恒为 false —— 调用方据此**不显示**这块磁贴，
-// 而不是显示「0%」，因为「没有电池」和「电池没电」是两件事。
+// 电池。
+//
+// 【三种状态，两个布尔量】
+// present / known 的四种组合里只有三种有意义：
+//
+//   known=true  present=true  → 有电池，且读到了状态（显示百分比）
+//   known=true  present=false → **确实没有电池**（台式机，显示「本机无电池」）
+//   known=false present=false → **状态读不到**（显示「电池状态未知」）
+//
+// known=false present=true 是非法组合，不会出现。
+//
+// 为什么要把「没有电池」和「读不到」分开：
+// 「本机无电池」是一句**关于本机硬件的断言**，说错就是在骗用户
+// （2026-10-26 就发生过一次：笔记本被误报成「本机无电池」，
+//   真凶是 BatteryFlag 的位被解释反了，详见 README 踩坑 52）。
+// 读不到状态时只能承认「不知道」，不能断言「没有」。
+//
+// 百分比口径：percent 只在 present=true 时有意义（0..100）。
+// 「没有电池」和「电池没电」是两件事，所以不拿 0% 冒充前者。
 struct BatteryInfo {
-    bool     present = false;
-    bool     charging = false;
+    bool     present = false;             // 本机确有电池
+    bool     known = false;               // 状态读到了吗（见上表）
+    bool     charging = false;            // 正在充电
     int      percent = 0;                 // 0..100
     uint32_t secondsLeft = 0;             // 剩余秒数，0 = 未知
 };
@@ -76,6 +94,18 @@ DiskActivityInfo QueryDiskActivity();
 
 // 电池状态。
 BatteryInfo QueryBattery();
+
+// 把 SYSTEM_POWER_STATUS 的原始字段翻译成 BatteryInfo。
+//
+// 【为什么抽成纯函数】
+// 「本机无电池」的误报真凶是 BatteryFlag 的位被解释反了
+// （0x01 是 BATTERY_FLAG_HIGH 电量充足，0x80 才是 NO_BATTERY）。
+// 这类错误**不会让程序崩溃、不改任何运行时行为**，
+// 在没有电池的机器上永远测不出来 —— 所以必须能**构造** flag 来测。
+// 抽成纯函数后，selftest 在任何机器上都能把 6 个 flag 语义全部走一遍。
+//
+// 三个参数的含义与 SYSTEM_POWER_STATUS 同名字段一致。
+BatteryInfo DecodeBatteryStatus(BYTE batteryFlag, BYTE lifePercent, DWORD lifeTime);
 
 // 物理内存。
 MemoryInfo QueryMemory();

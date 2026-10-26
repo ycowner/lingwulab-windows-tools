@@ -366,8 +366,8 @@ void TrayPanel::ApplyPanelHeight() {
     panelHeightLogical_ = target;
     ApplyFixedSize();
     if (visible_) PositionNearTray();
-    LINGWU_TRACE("TrayPanel: panel height -> %d logical (battery=%d)",
-                 panelHeightLogical_, batteryPresent_ ? 1 : 0);
+    LINGWU_TRACE("TrayPanel: panel height -> %d logical (battery=%d, known=%d)",
+                 panelHeightLogical_, batteryPresent_ ? 1 : 0, batteryKnown_ ? 1 : 0);
 }
 
 void TrayPanel::PositionNearTray() {
@@ -767,13 +767,18 @@ void TrayPanel::UpdateTiles(const core::Snapshot& s) {
     }
 
     // ---- 电池 ----
-    // 台式机上 present 恒为 false —— 整条**隐藏**。
+    // 无电池（present=false）时整条**隐藏**。
     // 「没有电池」和「电池没电」是两件事，显示 0% 是在撒谎。
     //
     // 【为什么要记下来】
     // 面板高度跟着电池变（见 ApplyPanelHeight），所以这里必须把
     // 「有没有电池」记成成员，供高度计算用。
+    //
+    // 【known 也记一份】
+    // 「确实没有电池」与「状态读不到」在面板上表现相同（都不显示电池条），
+    // 但它们是两回事，trace 里必须能分开，否则出问题时无从判断是哪一种。
     batteryPresent_ = s.battery.present;
+    batteryKnown_   = s.battery.known;
     if (s.battery.present) {
         BatteryCard().Visibility(Visibility::Visible);
         TileBatteryValue().Text(to_hstring(std::to_wstring(s.battery.percent).c_str()));

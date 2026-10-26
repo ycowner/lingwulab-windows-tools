@@ -764,8 +764,15 @@ void MonitorPage::UpdateTiles() {
     }
 
     // ---- 电池 ----
-    // 台式机上 present 恒为 false —— 显示「本机无电池」而不是 0%。
-    // 「没有电池」和「电池没电」是两件事。
+    // 三种状态，两种「没有」必须分开说：
+    //   present            → 有电池且读到了，显示百分比
+    //   known && !present  → 确实没有电池（台式机），显示「本机无电池」
+    //   !known             → 状态读不到，显示「电池状态未知」
+    //
+    // 【为什么不把「读不到」也说成「本机无电池」】
+    // 「本机无电池」是一句关于本机硬件的断言，说错就是在骗用户
+    // （2026-10-26 笔记本就被误报过一次，真凶是 BatteryFlag 的位被解释反了，
+    //   见 README 踩坑 52）。读不到时只能承认「不知道」。
     if (s.battery.present) {
         TileBatteryValue().Text(to_hstring(std::to_wstring(s.battery.percent).c_str()));
         TileBatteryUnit().Text(L"%");
@@ -779,7 +786,10 @@ void MonitorPage::UpdateTiles() {
         TileBatteryValue().Text(L"—");
         TileBatteryUnit().Text(L"");
         TileBatteryBadge().Text(L"");
-        TileBatterySub().Text(L"本机无电池");
+        TileBatterySub().Text(s.battery.known ? L"本机无电池" : L"电池状态未知");
+        // 进度条要归零 —— 否则从「有电池」切到「无电池」时，
+        // 上一帧的百分比还留在条上，看着像「电量掉到 0%」。
+        ui::SetBar(TileBatteryBarHost(), TileBatteryFill(), 0.0);
     }
 }
 

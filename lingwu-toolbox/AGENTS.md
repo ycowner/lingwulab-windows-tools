@@ -294,6 +294,27 @@ translation unit 里的原因之一。
     `OnEndTask` 用快照而不是活状态；快照为空才退回活状态。
     **修后验证**：同一份脚本连跑 8 次全绿，且 trace 里 `end-task ignored` 归零
     （修复前 8 次里复现 1 次，且那一行必现）。
+25. **`BatteryFlag` 的位含义要用 SDK 常量，别写魔数**（README 踩坑 52 有完整实测）。
+    `0x01` 是 `BATTERY_FLAG_HIGH`（**电量充足**），`0x08` 是 `BATTERY_FLAG_CHARGING`
+    （**充电中**），`0x80` 才是 `BATTERY_FLAG_NO_BATTERY`（**没有电池**）。
+    写反的后果是：笔记本被判成「本机无电池」（2026-10-26 实测，
+    本机 `BatteryFlag=0x01` 电池 99%，正好命中）。
+    两个配套约束：
+    - **「有没有电池」只认 `NO_BATTERY` 位**，不能用百分比反推 ——
+      本机同一次调用里 `BatteryFlag=0x01` 而 `BatteryLifePercent=99`，两字段互相矛盾。
+    - **`BATTERY_FLAG_UNKNOWN` 是 `0xFF`，所有位都是 1（含 `0x80`）**，
+      必须**先判 UNKNOWN（判相等）**、**再判 NO_BATTERY（按位）**，
+      顺序反了 0xFF 会先被 NO_BATTERY 命中，「状态未知」被误吞成「没有电池」。
+      修复时按反序写过一次，selftest 当场就红（monitor 1 failure）—— 纯函数 + 构造
+      flag 的断言第一次跑就抓到了它，这正是这套断言的价值所在。
+
+    电池判定已抽成**纯函数** `DecodeBatteryStatus(flag, percent, lifeTime)`，
+    selftest 用构造 flag 把 6 个位语义全走一遍 —— 这类错误不改任何运行时行为，
+    不构造就永远测不出来。**改电池逻辑先跑 `--selftest`。**
+
+    另：「本机无电池」是关于本机硬件的**断言**，与「状态读不到」必须分开
+    （`BatteryInfo` 用 `present` / `known` 两个布尔量区分），
+    读不到时只能说「电池状态未知」。
 
     > 两条配套纪律：
     > ① **静默 return 必须落 trace。** 这条路径在验收板上原本完全隐形 ——

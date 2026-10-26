@@ -193,23 +193,72 @@ DiskActivityInfo QueryDiskActivity() {
 
 // ---------------------------------------------------------------- 电池
 
-BatteryInfo QueryBattery() {
+// 【BatteryFlag 的位含义 —— 用 SDK 常量，不要写魔数】
+// 见 WinBase.h:8225-8230：
+//     BATTERY_FLAG_HIGH       0x01  电量充足
+//     BATTERY_FLAG_LOW        0x02  电量低
+//     BATTERY_FLAG_CRITICAL   0x04  电量极低
+//     BATTERY_FLAG_CHARGING   0x08  正在充电
+//     BATTERY_FLAG_NO_BATTERY 0x80  没有电池
+//     BATTERY_FLAG_UNKNOWN    0xFF  状态未知
+//
+// 【踩过的坑：位含义写反，笔记本被当成台式机】
+// 原实现写的是「1=无电池, 2=放电中, 4=接电源充电, 8=未充满」，全是错的：
+//   · `flag & 0x01` 当成「无电池」→ 实际 0x01 是「电量充足」。
+//     实测本机（带电池笔记本，Sunwoda L23D4PF1）BatteryFlag=0x01、
+//     BatteryLifePercent=99 —— **正好命中**，于是被判成「无电池」，
+//     状态页显示「本机无电池」、托盘面板的电池条整条不出现。
+//   · `flag & 0x04` 当成「充电中」→ 实际 0x04 是「电量极低」，
+//     真正的充电标志是 0x08。
+//
+// 【为什么「有没有电池」只看 NO_BATTERY 位，不能用百分比反推】
+// 上面那组实测数据本身就说明了问题：flag 说「无电池」而百分比是 99，
+// 两个字段互相矛盾。所以「百分比有效」不能当作「有电池」的证据，
+// 有无电池只认 NO_BATTERY 位。
+//
+// 【两个判据的顺序不能换】
+// BATTERY_FLAG_UNKNOWN 是 0xFF，**所有位都是 1**，它包含 0x80 位。
+// 所以必须**先判 UNKNOWN**（判相等），再判 NO_BATTERY（按位）：
+// 反过来的话 0xFF 会先被 NO_BATTERY 命中，「状态未知」被误吞成「没有电池」。
+// 这不是理论推演 —— 顺序写反时，selftest 的
+// 「BATTERY_FLAG_UNKNOWN(0xFF) 是「状态未知」」当场就红（实测踩过）。
+//
+// 【为什么不用 WMI / WinRT / 设备 IOCTL】
+// 这三条路在本机实测都正确，但：WMI 要 COM + WMI 栈（core/ 目前零 COM 依赖）；
+// WinRT PowerManager 要 init_apartment（而 --selftest 明确要求不初始化 COM，
+// 见 main.cpp 与 core/selftest.h）；设备 IOCTL 要新增 setupapi.lib 链接依赖
+// （README「需求变更」一节规定新增依赖必须先问用户）。
+// GetSystemPowerStatus 出错的只是位解释，修对常量即可，零新增依赖、零架构改动。
+BatteryInfo DecodeBatteryStatus(BYTE batteryFlag, BYTE lifePercent, DWORD lifeTime) {
     BatteryInfo out;
 
-    SYSTEM_POWER_STATUS st{};
-    if (!GetSystemPowerStatus(&st)) return out;
+    // 顺序要紧：UNKNOWN 是 0xFF，含 NO_BATTERY(0x80) 位，必须**先**判。
+    if (batteryFlag == BATTERY_FLAG_UNKNOWN) {
+        out.known = false;    // 状态读不到
+        return out;
+    }
+    if (batteryFlag & BATTERY_FLAG_NO_BATTERY) {
+        out.known = true;     // 明确读到「没有电池」→ 台式机
+        return out;
+    }
 
-    // BatteryFlag: 1=无电池, 2=放电中, 4=接电源充电, 8=未充满, 255=未知
-    if (st.BatteryFlag == 255) return out;   // 读不到 → 当作「没有这块信息」
-    if (st.BatteryFlag & 0x01) return out;    // 无电池 = 台式机，磁贴整块不显示
-
-    out.present  = true;
-    out.charging = (st.BatteryFlag & 0x04) != 0;
-    out.percent  = (st.BatteryLifePercent == 255) ? 0
-                                                   : static_cast<int>(st.BatteryLifePercent);
-    if (st.BatteryLifeTime != static_cast<DWORD>(-1))
-        out.secondsLeft = st.BatteryLifeTime;
+    out.known   = true;
+    out.present = true;
+    out.charging = (batteryFlag & BATTERY_FLAG_CHARGING) != 0;
+    out.percent  = (lifePercent == BATTERY_PERCENTAGE_UNKNOWN)
+                       ? 0 : static_cast<int>(lifePercent);
+    if (lifeTime != BATTERY_LIFE_UNKNOWN)
+        out.secondsLeft = lifeTime;
     return out;
+}
+
+BatteryInfo QueryBattery() {
+    SYSTEM_POWER_STATUS st{};
+    if (!GetSystemPowerStatus(&st)) {
+        // 整个 API 调用失败 —— 状态读不到（known 保持 false）。
+        return BatteryInfo{};
+    }
+    return DecodeBatteryStatus(st.BatteryFlag, st.BatteryLifePercent, st.BatteryLifeTime);
 }
 
 // ---------------------------------------------------------------- 内存

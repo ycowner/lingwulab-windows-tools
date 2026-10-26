@@ -1240,6 +1240,61 @@ GetAncestor(hit, GA_ROOT) →  WinUI Desktop           ← 顶层祖先 = 面板
 - 菜单项之间是**分隔符**，`GetMenuItemID` 返回 0、文本为空 ——
   数「菜单项个数」时要把它们剔掉（本项目 13 个位置 / 10 个文本项）。
 
+### 52. `BatteryFlag` 的位含义写反了，笔记本被当成台式机
+
+2026-10-26：状态页电池磁贴显示「本机无电池」，但本机是带电池的笔记本
+（`YC-XIAOXINPRO14`，电池 `Sunwoda L23D4PF1`）。
+
+真凶是 `SYSTEM_POWER_STATUS.BatteryFlag` 的**位含义整个写反了**。
+SDK 权威定义（`um/WinBase.h:8225-8230`）：
+
+```c
+#define BATTERY_FLAG_HIGH           0x01   // 电量充足
+#define BATTERY_FLAG_LOW            0x02   // 电量低
+#define BATTERY_FLAG_CRITICAL       0x04   // 电量极低
+#define BATTERY_FLAG_CHARGING       0x08   // 正在充电
+#define BATTERY_FLAG_NO_BATTERY     0x80   // 没有电池
+#define BATTERY_FLAG_UNKNOWN        0xFF   // 状态未知
+```
+
+而原实现写的是「1=无电池, 2=放电中, 4=接电源充电, 8=未充满」，于是：
+
+- `flag & 0x01` 被当成「无电池」→ 实际 `0x01` 是**电量充足**。
+  实测本机 `BatteryFlag=0x01`（电池 99%）→ **正好命中** → 被判成「无电池」。
+- `flag & 0x04` 被当成「充电中」→ 实际 `0x04` 是**电量极低**，充电是 `0x08`。
+
+**为什么「有没有电池」不能用百分比反推**：本机同一次调用里
+`BatteryFlag=0x01`（按错误口径读作「无电池」）而 `BatteryLifePercent=99` ——
+两个字段**互相矛盾**。所以「百分比有效」不能当作「有电池」的证据，
+有无电池只认 `BATTERY_FLAG_NO_BATTERY` 位。
+
+**两个判据的顺序不能换**：`BATTERY_FLAG_UNKNOWN` 是 `0xFF`，**所有位都是 1**，
+它**包含** `0x80` 位。所以必须**先判 `UNKNOWN`（判相等）**、再判 `NO_BATTERY`（按位）——
+反过来 0xFF 会先被 `NO_BATTERY` 命中，「状态未知」被误吞成「没有电池」。
+
+> 这条**不是理论推演**：修复时按「先 NO_BATTERY 后 UNKNOWN」写，
+> selftest 的「`BATTERY_FLAG_UNKNOWN(0xFF)` 是『状态未知』」**当场就红**了
+> （monitor 1 failure）。新断言第一次跑就抓到了自己写反的顺序 ——
+> 这也正是「把位语义抽成纯函数 + 构造 flag 断言」的价值：
+> 错的是**顺序**这种肉眼极难看出、但行为直接错的东西。
+
+**为什么这个 bug 能活这么久**：`tools/monitor/tiles.ps1` 里写着
+「（电池、磁盘活动在这台机器上**恒为**「—」：台式机没有电池）」——
+把「电池恒为空」当成了**合法终态**写进注释，于是它在验收层面是「符合预期」的。
+而 selftest 里的断言是 `Check(!bat.present || (percent >= 0 && percent <= 100))`，
+`!present` 为真时整条直接通过 —— **没有电池的机器上这条断言形同虚设**。
+
+对策两条：
+
+1. 判定逻辑抽成**纯函数** `DecodeBatteryStatus(flag, percent, lifeTime)`，
+   selftest 用**构造出来的** flag 把 6 个位语义全走一遍 ——
+   这类错误不改任何运行时行为，不构造就永远测不出来。
+2. 验收脚本改成**现读真机状态**再对期望值，不再写死「台式机没有电池」。
+
+**顺带**：「本机无电池」是一句关于本机硬件的**断言**，说错就是在骗用户。
+现在分成两种「没有」：确实没电池 →「本机无电池」；状态读不到 →「电池状态未知」
+（`BatteryInfo` 用 `present` / `known` 两个布尔量区分）。
+
 ## 版本号
 
 **当前版本：v0.0.3**（2026-10-26，托盘指标面板的可见性修复 +

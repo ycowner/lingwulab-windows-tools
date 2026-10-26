@@ -134,6 +134,13 @@ private:
     // 上一帧有没有电池。用来判断面板高度要不要跟着变。
     bool batteryPresent_ = false;
 
+    // 上一帧电池状态读到了吗。
+    //
+    // 「确实没有电池」与「状态读不到」在面板上表现相同（都不显示电池条），
+    // 但语义不同，trace 里必须能分开 —— 混成一种就分不清是台式机
+    // 还是采集失败。
+    bool batteryKnown_ = false;
+
     // Top 进程表的五行控件。行数固定、每秒原地改文字，
     // 所以控件只建一次（建在 BuildProcessTable 里）。
     struct ProcLine {

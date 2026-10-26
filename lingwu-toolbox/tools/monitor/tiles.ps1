@@ -310,8 +310,9 @@ Write-Output ("sample interval = " + $intervalMs + " ms, wait = " + $waitMs + " 
 # 内存要等第一帧完整快照（memory.totalBytes > 0）才有值；
 # 健康分要 cpu + 内存 + 磁盘都齐了才算得出。
 # 所以内存磁贴是「第一帧完整快照已落地」的信号。
-# （电池、磁盘活动在这台机器上**恒为**「—」：台式机没有电池，
-#   磁盘活动取不到 —— 那是合法的最终状态，不是没填上。）
+# （磁盘活动在这台机器上**取不到** —— 那是合法的最终状态，不是没填上。
+#   电池**不能**这样假设：它有没有值取决于本机到底有没有电池，
+#   必须现读真机状态再对期望值 —— 见下面第 ③ 条。）
 $populated = Wait-Until {
     $m = Find-ById $win 'TileMemoryValue'
     $h = Find-ById $win 'TileHealthValue'
@@ -371,6 +372,72 @@ if ($changed.Count -gt 0) {
         ("在 " + $waitMs + " ms（两个采样周期）内所有磁贴数值都没变。首读 / 末读：" +
          (($tiles | Where-Object { $_.Id -and $second.ContainsKey($_.Id) } |
              ForEach-Object { $_.Name + '=' + $first[$_.Id] + '/' + $second[$_.Id] }) -join '  '))
+}
+
+# ---------------------------------------------------------------- ③ 电池磁贴与真机一致
+
+# 【为什么必须现读真机状态，不能写死】
+# 之前这个脚本把「电池恒为 —：台式机没有电池」当成了合法终态写进注释，
+# 于是「笔记本被误报成『本机无电池』」这个缺陷在验收层面是「符合预期」的，
+# 一直没人质疑 —— 而真机其实是**笔记本**。
+#
+# 现在改成：先读真机到底有没有电池，再按期望值断言磁贴的显示。
+# 读法用 GetSystemPowerStatus（与产品同一套 API，口径一致）。
+#
+# 【BatteryFlag 位含义 —— 见 README 踩坑 52】
+#   0x01 HIGH 电量充足 / 0x02 LOW 电量低 / 0x04 CRITICAL 电量极低
+#   0x08 CHARGING 充电中 / 0x80 NO_BATTERY 没有电池 / 0xFF UNKNOWN 未知
+# 注意 0xFF 的所有位都是 1（**包含** 0x80），所以先判 0x80 会把
+# 「未知」误吞成「没有电池」——两个判据要分开判。
+# 注意 SYSTEM_POWER_STATUS 不是现成的 .NET 类型，必须先 Add-Type 定义出来，
+# **才能** New-Object —— 顺序反了会报「找不到 [System.Windows.PowerShell.SYSTEM_POWER_STATUS]」。
+if (-not ('BatProbe' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class BatProbe {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SYSTEM_POWER_STATUS {
+        public byte ACLineStatus; public byte BatteryFlag;
+        public byte BatteryLifePercent; public byte Reserved1;
+        public uint BatteryLifeTime; public uint BatteryFullLifeTime;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
+}
+'@
+}
+$batStatus = New-Object BatProbe+SYSTEM_POWER_STATUS
+[void][BatProbe]::GetSystemPowerStatus([ref]$batStatus)
+$batFlag = [int]$batStatus.BatteryFlag
+$batNoBattery = (($batFlag -band 0x80) -ne 0) -and ($batFlag -ne 0xFF)
+$batUnknown  = ($batFlag -eq 0xFF)
+Write-Output ("battery: flag=0x{0:X2} noBattery={1} unknown={2} percent={3}" -f `
+    $batFlag, $batNoBattery, $batUnknown, $batStatus.BatteryLifePercent)
+
+$batVal = Find-ById $win 'TileBatteryValue'
+$batSub = Find-ById $win 'TileBatterySub'
+if (-not $batVal) {
+    Assert-True '③ 电池磁贴与真机状态一致' $false '找不到 TileBatteryValue'
+} elseif ($batNoBattery) {
+    # 真机确实没有电池 → 磁贴必须说「本机无电池」，不能显示 0%
+    $subTxt = if ($batSub) { [string]$batSub.Current.Name } else { '' }
+    Assert-True '③ 电池磁贴与真机状态一致' `
+        ($subTxt -eq '本机无电池') `
+        ("真机无电池，磁贴副标题应为「本机无电池」，实际='" + $subTxt + "'")
+} elseif ($batUnknown) {
+    # 真机状态读不到 → 磁贴必须说「电池状态未知」，不能谎称「本机无电池」
+    $subTxt = if ($batSub) { [string]$batSub.Current.Name } else { '' }
+    Assert-True '③ 电池磁贴与真机状态一致' `
+        ($subTxt -eq '电池状态未知') `
+        ("真机电池状态未知，磁贴副标题应为「电池状态未知」，实际='" + $subTxt + "'")
+} else {
+    # 真机有电池 → 磁贴必须显示 0..100 的整数，**不能**是占位破折号
+    $valTxt = [string]$batVal.Current.Name
+    $isPct = $valTxt -match '^\d{1,3}$'
+    $inRange = $isPct -and ([int]$valTxt -ge 0) -and ([int]$valTxt -le 100)
+    Assert-True '③ 电池磁贴与真机状态一致' $inRange `
+        ("真机有电池（flag=0x" + ('{0:X2}' -f $batFlag) + "），磁贴应显示 0..100 的电量，实际='" + $valTxt + "'")
 }
 
 # ---------------------------------------------------------------- 截图

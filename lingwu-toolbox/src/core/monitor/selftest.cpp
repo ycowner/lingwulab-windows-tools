@@ -452,10 +452,91 @@ int RunSelfTest(int ticks) {
         const BatteryInfo& bat = lastSnap.battery;
         wchar_t batPct[32] = { 0 };
         swprintf_s(batPct, L"%d%%", bat.percent);
-        Line(W(L"  电池：%ls",
-               bat.present ? batPct : L"(本机无电池 —— 该磁贴整块不显示)"));
+        // 电池有三种状态，提示语必须区分开：
+        //   有电池 → 百分比
+        //   确实没电池 → 台式机
+        //   读不到 → 状态未知
+        // 三者混成一句话会骗用户（2026-10-26 笔记本就被误报成「本机无电池」，
+        // 真凶是 BatteryFlag 的位被解释反了，详见 README 踩坑 52）。
+        const std::wstring batDesc =
+            bat.present ? std::wstring(batPct)
+            : bat.known   ? std::wstring(L"(本机无电池)")
+                          : std::wstring(L"(电池状态未知)");
+        Line(W(L"  电池：%ls", batDesc.c_str()));
         Check(!bat.present || (bat.percent >= 0 && bat.percent <= 100),
               L"电池电量落在 0..100");
+        // present 与 known 的组合必须自洽：有电池必然读到了状态；
+        // 「读不到」不能同时说「没有电池」。
+        Check(!(bat.present && !bat.known),
+              L"电池状态自洽（有电池则状态一定读到了）");
+
+        // ---------------- 电池位语义（纯逻辑，与本机有无电池无关）----------------
+        //
+        // 【为什么必须单独测位含义】
+        // 「本机无电池」误报的真凶是 SYSTEM_POWER_STATUS.BatteryFlag 的位
+        // 被解释反了（0x01 是 BATTERY_FLAG_HIGH 电量充足，0x80 才是
+        // BATTERY_FLAG_NO_BATTERY）。这类错误**不改任何运行时行为**：
+        // 没有电池的机器上 present 恒为 false，断言 `!present || ...`
+        // 直接通过，测不出任何东西 —— 这正是它能活到今天的原因。
+        //
+        // 所以这里用 DecodeBatteryStatus 喂**构造出来的** flag，
+        // 让 6 个位语义在任何机器上都被走一遍。
+        Line(L"");
+        Line(L"[4b-1] 电池位语义（构造 flag，与本机有无电池无关）");
+        {
+            // 0x01 = BATTERY_FLAG_HIGH（电量充足）—— 这条就是原 bug 的回归点：
+            // 修复前它被判成「无电池」，笔记本被当成台式机。
+            const BatteryInfo high = DecodeBatteryStatus(
+                BATTERY_FLAG_HIGH, 99, BATTERY_LIFE_UNKNOWN);
+            Check(high.present && high.known,
+                  L"BATTERY_FLAG_HIGH(0x01) 是「电量充足」，不是「无电池」");
+            Check(!high.charging, L"BATTERY_FLAG_HIGH(0x01) 不表示充电中");
+            Check(high.percent == 99, L"电量百分比原样透传");
+
+            // 0x02 = BATTERY_FLAG_LOW（电量低）
+            const BatteryInfo low = DecodeBatteryStatus(
+                BATTERY_FLAG_LOW, 40, BATTERY_LIFE_UNKNOWN);
+            Check(low.present && low.known && !low.charging,
+                  L"BATTERY_FLAG_LOW(0x02) 是「电量低」，有电池且不充电");
+
+            // 0x04 = BATTERY_FLAG_CRITICAL（电量极低）—— 修复前被当成「充电中」。
+            const BatteryInfo crit = DecodeBatteryStatus(
+                BATTERY_FLAG_CRITICAL, 5, BATTERY_LIFE_UNKNOWN);
+            Check(crit.present && crit.known,
+                  L"BATTERY_FLAG_CRITICAL(0x04) 是「电量极低」，有电池");
+            Check(!crit.charging,
+                  L"BATTERY_FLAG_CRITICAL(0x04) 不是「充电中」（充电是 0x08）");
+
+            // 0x08 = BATTERY_FLAG_CHARGING（充电中）—— 修复前读反了。
+            const BatteryInfo chg = DecodeBatteryStatus(
+                BATTERY_FLAG_CHARGING, 50, 3600);
+            Check(chg.present && chg.known && chg.charging,
+                  L"BATTERY_FLAG_CHARGING(0x08) 是「充电中」");
+            Check(chg.secondsLeft == 3600, L"剩余秒数原样透传");
+
+            // 0x80 = BATTERY_FLAG_NO_BATTERY（确实没有电池，台式机）
+            const BatteryInfo none = DecodeBatteryStatus(
+                BATTERY_FLAG_NO_BATTERY, 255, BATTERY_LIFE_UNKNOWN);
+            Check(!none.present && none.known,
+                  L"BATTERY_FLAG_NO_BATTERY(0x80) 是「确实没有电池」");
+            Check(!none.charging, L"无电池时不报充电中");
+
+            // 0xFF = BATTERY_FLAG_UNKNOWN（状态未知）——
+            // 它的所有位都是 1，**包含** 0x80 位，所以判据顺序不能反：
+            // 先判 NO_BATTERY 会把「未知」误吞成「没有电池」。
+            const BatteryInfo unk = DecodeBatteryStatus(
+                BATTERY_FLAG_UNKNOWN, 255, BATTERY_LIFE_UNKNOWN);
+            Check(!unk.present && !unk.known,
+                  L"BATTERY_FLAG_UNKNOWN(0xFF) 是「状态未知」，不是「没有电池」");
+
+            // 百分比与剩余时间的哨兵值
+            const BatteryInfo sentinel = DecodeBatteryStatus(
+                BATTERY_FLAG_HIGH, BATTERY_PERCENTAGE_UNKNOWN, BATTERY_LIFE_UNKNOWN);
+            Check(sentinel.percent == 0,
+                  L"百分比未知(0xFF) 归零，不当 255 用");
+            Check(sentinel.secondsLeft == 0,
+                  L"剩余时间未知(0xFFFFFFFF) 归零，不当真实秒数用");
+        }
 
         Line(W(L"  物理内存：已用 %ls / 总量 %ls（占用 %.0f%%）",
                FormatBytes(lastSnap.memory.totalBytes - lastSnap.memory.availableBytes).c_str(),
