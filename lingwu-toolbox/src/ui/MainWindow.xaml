@@ -131,8 +131,13 @@
                             Background="Transparent">
                     <!-- ExtendsContentIntoTitleBar 之后，DWM 把右侧约 140px 留给
                          最小化/最大化/关闭，所以这一行右侧必须空着。 -->
-                    <FontIcon Glyph="&#xE9D2;" FontSize="14" VerticalAlignment="Center"
-                              Foreground="{ThemeResource TextFillColorPrimaryBrush}" />
+                    <!-- 应用图标：小蜜蜂徽章（位图，resources\bee-badge-32.png）。
+                         与 exe / 托盘 / 导航 logo 是同一张图，底板同为藏青 #1E222B 圆角方块。
+                         16 DIP 的位子：200% DPI 下正好是 32 物理像素，1:1 不糊。 -->
+                    <Image Source="ms-appx:///Assets/bee-badge-32.png"
+                           Width="16" Height="16"
+                           VerticalAlignment="Center"
+                           Stretch="Uniform" />
                     <TextBlock Text="零物工具箱"
                                VerticalAlignment="Center"
                                Style="{ThemeResource BodyStrongTextBlockStyle}" />
@@ -141,7 +146,7 @@
                 <!-- 模块导航：Mole 式圆角容器 + 圆形矢量星球 logo + 6 个页签。
 
                      【整体形态】
-                     一个高 36 DIP 的圆角胶囊容器，最左端是 28×28 的圆形 logo，
+                     一个高 36 DIP 的圆角胶囊容器，最左端是 28×28 的小蜜蜂徽章，
                      后面横排六个页签：清理 / 应用 / 优化 / 分析 / 状态 / 服务。
                      当前页签整块填充**该页自己的主色**、文字反白；
                      未选中的页签透明底 + 普通文字色；
@@ -149,14 +154,15 @@
                      鼠标悬停给一行「规划中」的说明。
 
                      【为什么 logo 放在容器里而不是标题栏最左】
-                     那是「零物工具箱」那个图标的位置（已经有一个 FontIcon 了）。
-                     圆形星球 logo 是**导航组自己的标识** —— 它标的是
-                     「这排东西是一组页签」，跟应用图标不是一回事。
+                     那是「零物工具箱」那个图标的位置（标题栏最左已经是小蜜蜂徽章了）。
+                     导航组自己再放一枚小蜜蜂，是标「这排东西是一组页签」的组标识；
                      两者挤在标题栏左端会互相干扰。
 
-                     【为什么 logo 是自绘矢量而不是图片资源】
-                     不引第三方素材、不打包二进制资源，也不用 emoji。
-                     全部用 Ellipse + Path 画出来，任何缩放比例下都是清晰的。
+                     【为什么这里是位图而不是自绘矢量】
+                     2026-10-27 用户拍板：**不重绘**，直接用那张参考图，
+                     底板换成品牌藏青 #1E222B 圆角方块 —— 与 exe / 托盘图标
+                     完全同一张（resources\bee-badge-64.png）。
+                     矢量重绘只能做到「像」，三处要的是「同一只」。
 
                      【容器的底色为什么用「主文字色 @ 6%」】
                      主题画刷键名不能靠猜 —— 写错一个键名，InitializeComponent
@@ -184,50 +190,23 @@
                                     VerticalAlignment="Center"
                                     Margin="6,0,6,0">
 
-                            <!-- 圆形矢量星球 logo：中央实心球 + 倾斜椭圆轨道环 + 一颗卫星点。
-                                 轨道与卫星放在同一个带旋转的 Grid 里，
-                                 旋转时两者一起转，卫星才始终落在轨道上。
+                            <!-- 小蜜蜂徽章：藏青圆角方块底板 + 参考图里那只蜂。
+                                 位图（resources\bee-badge-64.png），与 exe / 托盘图标同一张。
 
-                                 【为什么轨道是 22×8 这么扁、球只有 9】
-                                 第一版把轨道画成 18×9、球画成 7×7 —— 轨道几乎整个被球盖住，
-                                 只剩右下角一截若有若无的弧线，压根看不出是「星球」。
-                                 现在轨道左右两端（x=3 / x=25）远远伸出球的范围（9.5~18.5），
-                                 「一个球 + 一道穿过去的环」才成立。
+                                 【为什么是 28×28 的方块而不是圆形】
+                                 底板沿用 app.ico 的圆角方块（藏青 #1E222B，圆角 22.5%、内缩 2%），
+                                 这样三处（exe、托盘、导航）是同一枚图标，缩到 28 DIP 也不糊。
 
-                                 【为什么卫星要放在轨道右端】
-                                 放在轨道正上方的话，那个点正好落在球的矩形范围内，
-                                 而球是后画的、会把它盖住 —— 卫星就永远看不见。
-                                 右端 (25,14) 在球之外，必定可见。 -->
+                                 【x:Name 保留】
+                                 NavLogo 这个名字是给代码用的（容器里换页时的定位），
+                                 所以这里只换内容、不动元素本身。 -->
                             <Grid x:Name="NavLogo"
                                   Width="28" Height="28"
                                   Margin="2,0,8,0"
                                   VerticalAlignment="Center">
-                                <Ellipse Width="24" Height="24"
-                                         HorizontalAlignment="Center" VerticalAlignment="Center"
-                                         Fill="{ThemeResource TextFillColorPrimaryBrush}"
-                                         Opacity="0.10" />
-                                <Grid RenderTransformOrigin="0.5,0.5">
-                                    <Grid.RenderTransform>
-                                        <RotateTransform Angle="-20" />
-                                    </Grid.RenderTransform>
-                                    <!-- 椭圆轨道。Path 的几何外框（22×8）与元素尺寸一致，
-                                         所以 Uniform 拉伸的缩放比正好是 1，几何中心落在元素中心。 -->
-                                    <Path Data="M 3,14 A 11,4 0 1,0 25,14 A 11,4 0 1,0 3,14 Z"
-                                          Width="22" Height="8"
-                                          HorizontalAlignment="Center" VerticalAlignment="Center"
-                                          Stroke="{ThemeResource TextFillColorPrimaryBrush}"
-                                          StrokeThickness="1.3"
-                                          Opacity="0.75" />
-                                    <!-- 卫星点：未旋转时落在轨道右端 (25,14)，
-                                         跟着上面那个 Grid 一起转。 -->
-                                    <Ellipse Width="2.6" Height="2.6"
-                                             HorizontalAlignment="Left" VerticalAlignment="Top"
-                                             Margin="23.7,12.7,0,0"
-                                             Fill="{ThemeResource AccentFillColorDefaultBrush}" />
-                                </Grid>
-                                <Ellipse Width="9" Height="9"
-                                         HorizontalAlignment="Center" VerticalAlignment="Center"
-                                         Fill="{ThemeResource TextFillColorPrimaryBrush}" />
+                                <Image Source="ms-appx:///Assets/bee-badge-64.png"
+                                       Width="28" Height="28"
+                                       Stretch="Uniform" />
                             </Grid>
 
                             <!-- 六个页签。前四个本轮是「规划中」的禁用态占位。 -->
