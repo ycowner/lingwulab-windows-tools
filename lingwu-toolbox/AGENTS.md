@@ -893,7 +893,7 @@ tools/
 | `tools/service/create.ps1` | 创建服务的表单校验 + 真建出来 + 清理 |
 | `tools/service/mem.ps1` | 服务侧干净实例内存 |
 | `tools/service/admin.ps1` | 提权模型：应用是管理员、写操作直接生效、不弹提权框 |
-| `tools/build/make-icon.ps1` | 生成 `resources/app.ico` + 应用内徽章（标题栏带底板一张 + **导航透明底两版**：深色主题白蜂、浅色主题黑蜂）；`-Source art` 用参考图位图，`-Source geometry` 是纯几何重绘备选 |
+| `tools/build/make-icon.ps1` | 生成 `resources/app.ico` + 应用内徽章（标题栏带底板一张 + **导航透明底两版**：深色主题白蜂、浅色主题黑蜂）；`-Source art` 用参考图位图，`-Source geometry` 是纯几何重绘备选；浅色那版走**独立源图** `-LightSource`（默认 `resources/bee-source-light.png`），不是把白蜂反色 |
 | `tools/build/make-unelevated.ps1` | 造 `build\unelevated` 验证副本（清单改成 `asInvoker`），供 `run-all.ps1 -Unelevated` 驱动 |
 
 ### 验收脚本的输出契约

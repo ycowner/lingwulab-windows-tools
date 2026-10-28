@@ -85,6 +85,10 @@ param(
     # 参考图那条路用的源图（默认 resources\bee-source.png）。
     [string]$ArtSource = '',
 
+    # 浅色主题那张导航徽章用的源图（默认 resources\bee-source-light.png）。
+    # 它是**另一张**参考图（黑蜂白底），不是白蜂那张的反色。
+    [string]$LightSource = '',
+
     # 把每一档尺寸另外落成 PNG（对照拼版要逐档取用几何版本）。
     [string]$DumpDir = ''
 )
@@ -657,11 +661,19 @@ if ($Source -eq 'art') {
     $noneDir = Join-Path $root (Join-Path 'build\bee-art' 'none')
     & python $artScript --source $artSource --outdir $noneDir --plate none --coverage $Coverage
     if ($LASTEXITCODE -ne 0) { throw "render-bee-art.py (transparent) failed (exit $LASTEXITCODE)." }
-    $noneInvDir = Join-Path $root (Join-Path 'build\bee-art' 'none-inv')
-    & python $artScript --source $artSource --outdir $noneInvDir --plate none --invert --coverage $Coverage
-    if ($LASTEXITCODE -ne 0) { throw "render-bee-art.py (transparent, inverted) failed (exit $LASTEXITCODE)." }
-    $badgeTargets += , @{ From = 'none-64.png';       To = 'bee-badge-64.png';       Dir = $noneDir }
-    $badgeTargets += , @{ From = 'none-inv-64.png';   To = 'bee-badge-64-light.png'; Dir = $noneInvDir }
+
+    # 浅色主题那张用的是**另一张源图**（resources\bee-source-light.png，黑蜂白底），
+    # 不是把白蜂反色 —— 2026-10-28 用户给的是一张造型不同的卡通蜜蜂
+    # （头更大、触角更粗、笑脸不同，与白蜂那张的剪影 IoU 只有 0.66）。
+    # 反色那套（--invert）还在 render-bee-art.py 里备用，但正式产物不走它。
+    $lightSource = if ($LightSource) { $LightSource } else { Join-Path $root 'resources\bee-source-light.png' }
+    $lightDir = Join-Path $root (Join-Path 'build\bee-art' 'light')
+    if (-not (Test-Path $lightSource)) { throw "$lightSource not found." }
+    & python $artScript --source $lightSource --outdir $lightDir --plate none --coverage $Coverage
+    if ($LASTEXITCODE -ne 0) { throw "render-bee-art.py (light source) failed (exit $LASTEXITCODE)." }
+
+    $badgeTargets += , @{ From = 'none-64.png'; To = 'bee-badge-64.png';       Dir = $noneDir }
+    $badgeTargets += , @{ From = 'none-64.png'; To = 'bee-badge-64-light.png'; Dir = $lightDir }
 
     foreach ($b in $badgeTargets) {
         $dir = if ($b.ContainsKey('Dir')) { $b.Dir } else { $artDir }
