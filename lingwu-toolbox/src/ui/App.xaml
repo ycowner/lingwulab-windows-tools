@@ -31,6 +31,45 @@
             </ResourceDictionary.MergedDictionaries>
 
             <!--
+              【导航容器左端那枚小蜜蜂徽章 —— 本工程唯一一处用 ThemeDictionaries 的地方】
+
+              为什么这里必须要主题字典（而下面那六个页签主色刻意不用）：
+              2026-10-28 用户拍板把导航徽章的底板去掉，改成**透明底**。
+              但蜂的原图是「白蜂 + 黑条纹」—— 透明底之后，
+              白色那一坨在**浅色主题**的药丸容器（≈ #F0F0F0）上等于隐形。
+              所以深色主题用白蜂、浅色主题必须换成黑蜂，两张图由主题字典选。
+
+              【为什么这次用 ThemeDictionaries 是安全的】
+              下面那条注释说「ThemeDictionaries 要求每个键在 Light / HighContrast
+              两套里都给出值，少一套就抛 0x802B000A」——
+              那个坑的成因是**分支不全**，不是 ThemeDictionaries 本身有毒。
+              这里三个分支（Default / Light / HighContrast）全部给出了 BeeNavLogo，
+              缺分支的事不会发生。
+
+              【HighContrast 选白蜂的理由】
+              Windows 的高对比度主题多数是黑底（白字），
+              「High Contrast White」是少数派。白蜂在黑底 HC 上对比度最好。
+
+              【exe / 托盘图标不用这一套】
+              那两处各自有各的底色（任务栏、托盘、资源管理器列表），
+              透明底会随系统主题变来变去，所以 app.ico 固定用近黑底板 + 白蜂。
+            -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Default">
+                    <BitmapImage x:Key="BeeNavLogo"
+                                 UriSource="ms-appx:///Assets/bee-badge-64.png" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <BitmapImage x:Key="BeeNavLogo"
+                                 UriSource="ms-appx:///Assets/bee-badge-64-light.png" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <BitmapImage x:Key="BeeNavLogo"
+                                 UriSource="ms-appx:///Assets/bee-badge-64.png" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+
+            <!--
               【页签主色 —— 每页一个，2026-10-25 Gate 0 拍板】
               「每页独立主色」这条决策轴的结果：导航容器里当前页签的填充色
               跟着页面走，六个页面一眼可辨。

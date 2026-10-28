@@ -1301,7 +1301,10 @@ SDK 权威定义（`um/WinBase.h:8225-8230`）：
 
 > 工作区里还有一处**尚未发布**的改动（2026-10-28）：应用图标换成了新的
 > 「黑白可爱蜜蜂」参考图，底板由藏青 `#1E222B` 改成近黑 `#101114`，
-> 蜂在底板里的占比 80% → 88%（小尺寸更清楚）。
+> 蜂在底板里的占比 80% → 88%（小尺寸更清楚）；
+> 同一天又按用户要求把**应用内导航徽章的底板去掉**（改成透明底），
+> 并给它配了主题两版：深色主题白蜂、浅色主题黑蜂
+> —— 透明底的白色在浅色药丸容器上会隐形，所以浅色主题必须换黑蜂。
 > 版本号没动 —— 与上一次换图标一样，换图标本身不算功能变更。
 > 换图标的流程见 `tools/build/make-icon.ps1`（出产物）
 > 与 `tools/build/make-icon-sheet.py`（出候选对照拼版）。
@@ -1499,7 +1502,7 @@ pwsh -NoProfile -File .\tools\build\run-all.ps1 -Only 'monitor/close-flow,servic
 | `service/create.ps1` | 创建服务的表单校验 + **真建出来**（脚本结束时会删掉并确认删除成功） |
 | `service/mem.ps1` | 服务侧干净实例内存 |
 | `service/admin.ps1` | 提权模型：应用是管理员、写操作直接生效、不弹提权框 |
-| `build/make-icon.ps1` | 生成 `resources/app.ico` + 两张应用内徽章（`-Source art` 用参考图位图，抠底后合成到指定底板；`-Source geometry` 是纯几何重绘备选） |
+| `build/make-icon.ps1` | 生成 `resources/app.ico` + 应用内徽章（标题栏带底板一张 + **导航透明底两版**：深色主题白蜂、浅色主题黑蜂）；`-Source art` 用参考图位图，`-Source geometry` 是纯几何重绘备选 |
 | `build/install-winui-workload.ps1` | 装 WinUI 3 工作流 |
 | `build/make-unelevated.ps1` | 造 `build\unelevated` 验证副本：整目录拷贝 + `mt.exe` 把清单里的 `requireAdministrator` 改成 `asInvoker`，再从二进制里读回来验证 |
 

@@ -245,6 +245,8 @@ def main():
             rgba[:, :, 3:4] > 0, (255 - rgb).astype(np.uint8), 0)
 
     plates = ([args.plate] if args.plate else ["navy", "light", "none"])
+    # 反色时文件名加 "-inv" 后缀：同一目录里白蜂版与黑蜂版不能同名，
+    # 否则第二次渲染会把第一次的结果覆盖掉（安静地少一张图）。
     for size in (16, 24, 32, 48, 64, 128, 256):
         for name in plates:
             plate = PLATES[name]
@@ -263,7 +265,8 @@ def main():
             img = Image.fromarray(np.dstack([
                 np.clip(out_pm, 0, 255).astype(np.uint8),
                 np.clip(out_a, 0, 255).astype(np.uint8)]))
-            img.save(os.path.join(args.outdir, "%s-%d.png" % (name, size)))
+            prefix = ("%s-inv" % name) if args.invert else name
+            img.save(os.path.join(args.outdir, "%s-%d.png" % (prefix, size)))
 
     print("[OK] art rendered -> %s (plate=%s, coverage=%.2f, invert=%s)"
           % (args.outdir, ",".join(plates), args.coverage, args.invert))

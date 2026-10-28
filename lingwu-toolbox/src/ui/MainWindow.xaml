@@ -190,12 +190,21 @@
                                     VerticalAlignment="Center"
                                     Margin="6,0,6,0">
 
-                            <!-- 小蜜蜂徽章：近黑圆角方块底板 + 参考图里那只蜂。
-                                 位图（resources\bee-badge-64.png），与 exe / 托盘图标同一张。
+                            <!-- 小蜜蜂徽章：**透明底** + 参考图里那只蜂。
+                                 图由 App.xaml 的 ThemeDictionaries 按主题给：
+                                 深色主题白蜂、浅色主题黑蜂（透明底的白色在浅色
+                                 药丸上会隐形）。深色主题那张是
+                                 resources\bee-badge-64.png。
 
-                                 【为什么是 28×28 的方块而不是圆形】
-                                 底板沿用 app.ico 的圆角方块（近黑 #101114，圆角 22.5%、内缩 2%），
-                                 这样三处（exe、托盘、导航）是同一枚图标，缩到 28 DIP 也不糊。
+                                 【为什么导航这枚去掉了底板，标题栏那枚没去掉】
+                                 2026-10-28 用户拍板：导航容器本身已经是一个药丸，
+                                 再压一块近黑方底像「挖了个洞」（见当时的截图）。
+                                 而标题栏那枚坐在整条深色标题栏上，底板几乎看不出来，
+                                 留着还能在浅色主题下保住对比度 —— 所以那枚不动。
+
+                                 【源图仍然同一只】
+                                 去掉的是底板，不是重绘：蜂还是 resources\bee-source.png
+                                 那只，抠完底直接贴到容器背景上。
 
                                  【x:Name 保留】
                                  NavLogo 这个名字是给代码用的（容器里换页时的定位），
@@ -204,7 +213,7 @@
                                   Width="28" Height="28"
                                   Margin="2,0,8,0"
                                   VerticalAlignment="Center">
-                                <Image Source="ms-appx:///Assets/bee-badge-64.png"
+                                <Image Source="{ThemeResource BeeNavLogo}"
                                        Width="28" Height="28"
                                        Stretch="Uniform" />
                             </Grid>
