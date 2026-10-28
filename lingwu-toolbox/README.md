@@ -320,7 +320,7 @@ lingwu-toolbox/
 │   │   └── mem-baseline.ps1      #   内存红线基线（六个场景长跑）
 │   ├── monitor/                  # 性能监视侧验收脚本
 │   ├── service/                  # 服务管理侧验收脚本
-│   └── build/                    # 构建工具（make-icon / install-winui-workload / make-unelevated）
+│   └── build/                    # 构建工具（make-icon / make-icon-sheet / install-winui-workload / make-unelevated）
 │       ├── run-all.ps1           #   整轮验收运行器
 │       └── make-unelevated.ps1   #   造 asInvoker 验证副本（非提权验收用）
 └── AGENTS.md                     # 给 AI agent 的硬约束与踩坑清单
@@ -1299,6 +1299,13 @@ SDK 权威定义（`um/WinBase.h:8225-8230`）：
 
 **当前版本：v0.0.4**（2026-10-27，小蜜蜂图标 + 电池状态判读修复）。
 
+> 工作区里还有一处**尚未发布**的改动（2026-10-28）：应用图标换成了新的
+> 「黑白可爱蜜蜂」参考图，底板由藏青 `#1E222B` 改成近黑 `#101114`，
+> 蜂在底板里的占比 80% → 88%（小尺寸更清楚）。
+> 版本号没动 —— 与上一次换图标一样，换图标本身不算功能变更。
+> 换图标的流程见 `tools/build/make-icon.ps1`（出产物）
+> 与 `tools/build/make-icon-sheet.py`（出候选对照拼版）。
+
 上一版是 **v0.0.3**（2026-10-26，托盘指标面板的可见性修复 +
 右键菜单加「指标面板」入口），再上一版是 **v0.0.2**（2026-10-26，仿 Mole
 改造 Phase 1：六页签外壳 + 状态页 4×2 磁贴 + 托盘指标面板），
@@ -1492,7 +1499,7 @@ pwsh -NoProfile -File .\tools\build\run-all.ps1 -Only 'monitor/close-flow,servic
 | `service/create.ps1` | 创建服务的表单校验 + **真建出来**（脚本结束时会删掉并确认删除成功） |
 | `service/mem.ps1` | 服务侧干净实例内存 |
 | `service/admin.ps1` | 提权模型：应用是管理员、写操作直接生效、不弹提权框 |
-| `build/make-icon.ps1` | 生成 `resources/app.ico`（几何图形，可复现） |
+| `build/make-icon.ps1` | 生成 `resources/app.ico` + 两张应用内徽章（`-Source art` 用参考图位图，抠底后合成到指定底板；`-Source geometry` 是纯几何重绘备选） |
 | `build/install-winui-workload.ps1` | 装 WinUI 3 工作流 |
 | `build/make-unelevated.ps1` | 造 `build\unelevated` 验证副本：整目录拷贝 + `mt.exe` 把清单里的 `requireAdministrator` 改成 `asInvoker`，再从二进制里读回来验证 |
 

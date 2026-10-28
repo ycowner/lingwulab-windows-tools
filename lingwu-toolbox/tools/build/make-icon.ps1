@@ -5,6 +5,7 @@
 #   pwsh -NoProfile -File .\tools\build\make-icon.ps1 -Preview
 #   pwsh -NoProfile -File .\tools\build\make-icon.ps1 -CompareSheet
 #   pwsh -NoProfile -File .\tools\build\make-icon.ps1 -Source geometry
+#   pwsh -NoProfile -File .\tools\build\make-icon.ps1 -Source art -Plate black -Coverage 0.88
 #
 # 【现在产出什么】
 #   resources\app.ico            —— exe / 任务栏 / 托盘 / SFX 自解压启动器用的图标
@@ -14,8 +15,9 @@
 #
 # 【造型来源：直接用参考图，不重绘】
 # 2026-10-27 用户拍板：「不用绘制，直接把这张图片背景改为藏青背板，直接用」。
+# 2026-10-28 换成新的「黑白可爱蜜蜂」参考图，底板随之改成近黑（-Plate black）。
 # 所以主路线（-Source art，默认）是把 resources\bee-source.png 那张参考图
-# **抠掉白底后原样合成到藏青底板上** —— 一个像素都不重画。
+# **抠掉背景后原样合成到底板上** —— 一个像素都不重画。
 # 原因很实际：三处（exe/托盘、标题栏、导航）要的是「同一只蜂」，
 # 矢量重绘只能做到「像」，做不到「同一只」。
 #
@@ -23,8 +25,16 @@
 # 按亮度键控会把高光一起抠穿。抠图细节见 tools\build\render-bee-art.py 的注释。
 #
 # 【底板】
-#   藏青 #1E222B（品牌色），圆角方块：圆角半径 22.5%、内缩 2%。
+#   由 -Plate 决定：navy 藏青 #1E222B（品牌色）/ light 浅色 / black 近黑 #101114 / none 透明。
+#   圆角方块：圆角半径 22.5%、内缩 2%。
 #   .ico 与两张应用内徽章用的是**同一套底板参数**，所以三处看起来是同一枚图标。
+#
+# 【占比】
+#   -Coverage 是蜂在底板里的占比，默认 0.80。往上调（0.88）小尺寸更清楚。
+#
+# 【候选对照】
+#   换参考图或换底板时，先跑 tools\build\make-icon-sheet.py 出对照拼版给人看，
+#   定下来再跑本脚本生成正式产物。对照拼版不碰 resources\app.ico。
 #
 # 【geometry 那条路还留着】
 # -Source geometry 是**纯 PowerShell 的几何重绘**（不依赖 Python / Pillow），
@@ -40,7 +50,7 @@ param(
     [switch]$Preview,
 
     # 图标来源：
-    #   art      —— 用 resources\bee-source.png（参考图），抠掉白底后合成到藏青底板。
+    #   art      —— 用 resources\bee-source.png（参考图），抠掉背景后合成到指定底板。
     #               需要 python + Pillow（见 tools\build\render-bee-art.py）。
     #   geometry —— 用本文件里的矢量重绘（纯 PowerShell，无外部依赖），
     #               造型比参考图简单，小尺寸更锐利，但不是你给的那张参考图。
@@ -58,6 +68,22 @@ param(
     # 只生成候选对照拼版（build\icon-compare.png），**不碰** resources\app.ico。
     # 用来在定稿前把几个候选并排摊开给人看。
     [switch]$CompareSheet,
+
+    # 参考图那条路（-Source art）用的底板与蜂的占比。
+    # 默认值 = 当前已定稿的那一套（2026-10-28 用户选定「纯黑底板 · 占 88%」）。
+    #   navy   藏青底板（品牌色）
+    #   light  浅色底板
+    #   black  近纯黑底板（默认）
+    #   none   无底板（透明）
+    [ValidateSet('navy', 'light', 'black', 'none')]
+    [string]$Plate = 'black',
+
+    # 蜂在底板里的占比。调大一点小尺寸更清楚。
+    [ValidateRange(0.50, 1.0)]
+    [double]$Coverage = 0.88,
+
+    # 参考图那条路用的源图（默认 resources\bee-source.png）。
+    [string]$ArtSource = '',
 
     # 把每一档尺寸另外落成 PNG（对照拼版要逐档取用几何版本）。
     [string]$DumpDir = ''
@@ -585,14 +611,14 @@ if ($Source -eq 'art') {
     # 参考图那条路：python 负责抠图与合成（位图处理用 numpy 更快也更准），
     # 产出的各档 PNG 再走下面同一段打包代码 —— 打包格式两条产线是一致的。
     $artScript = Join-Path $here 'render-bee-art.py'
-    $artSource = Join-Path $root 'resources\bee-source.png'
-    $artDir = Join-Path $root 'build\bee-art'
+    $artSource = if ($ArtSource) { $ArtSource } else { Join-Path $root 'resources\bee-source.png' }
+    $artDir = Join-Path $root (Join-Path 'build\bee-art' $Plate)
     if (-not (Test-Path $artScript)) { throw "tools\build\render-bee-art.py not found." }
-    if (-not (Test-Path $artSource)) { throw "resources\bee-source.png not found." }
-    & python $artScript --source $artSource --outdir $artDir
+    if (-not (Test-Path $artSource)) { throw "$artSource not found." }
+    & python $artScript --source $artSource --outdir $artDir --plate $Plate --coverage $Coverage
     if ($LASTEXITCODE -ne 0) { throw "render-bee-art.py failed (exit $LASTEXITCODE)." }
     foreach ($s in $sizes) {
-        $png = Join-Path $artDir ("navy-{0}.png" -f $s)
+        $png = Join-Path $artDir ("{0}-{1}.png" -f $Plate, $s)
         if (-not (Test-Path $png)) { throw "render-bee-art.py did not produce $png" }
         $frames += , [pscustomobject]@{ Size = $s; Bytes = [System.IO.File]::ReadAllBytes($png) }
         Write-Host ("  packed   {0,3} x {0,-3} ({1} bytes png)" -f $s, $frames[-1].Bytes.Length)
@@ -608,14 +634,17 @@ if ($Source -eq 'art') {
     # 应用内两处标记用的徽章（位图，直接引用，不重绘）：
     #   bee-badge-64.png —— 导航容器左端的圆形 logo 位（28 DIP，200% DPI 下 56 物理像素）
     #   bee-badge-32.png —— 标题栏文字前的图标位（16 DIP，200% DPI 下 32 物理像素）
-    # 底板与 .ico 完全一致（藏青 #1E222B 圆角方块），所以三处看起来是同一枚图标。
-    $badges = @{ 'navy-64.png' = 'bee-badge-64.png'; 'navy-32.png' = 'bee-badge-32.png' }
-    foreach ($src in $badges.Keys) {
-        $from = Join-Path $artDir $src
-        if (-not (Test-Path $from)) { throw "render-bee-art.py did not produce $from" }
-        $to = Join-Path $root (Join-Path 'resources' $badges[$src])
-        [System.IO.File]::Copy($from, $to, $true)
-        Write-Host ("  badge    {0} <- {1}" -f $badges[$src], $src)
+    # 底板与 .ico 完全一致（同一套 plate 参数），所以三处看起来是同一枚图标。
+    if ($Plate -ne 'none') {
+        $badges = @{ ('{0}-64.png' -f $Plate) = 'bee-badge-64.png'
+                     ('{0}-32.png' -f $Plate) = 'bee-badge-32.png' }
+        foreach ($src in $badges.Keys) {
+            $from = Join-Path $artDir $src
+            if (-not (Test-Path $from)) { throw "render-bee-art.py did not produce $from" }
+            $to = Join-Path $root (Join-Path 'resources' $badges[$src])
+            [System.IO.File]::Copy($from, $to, $true)
+            Write-Host ("  badge    {0} <- {1}" -f $badges[$src], $src)
+        }
     }
 } else {
     foreach ($s in $sizes) {

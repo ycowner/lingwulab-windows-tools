@@ -51,11 +51,21 @@ def shift(a, dy, dx, fill=0.0):
 
 
 def matte(src_path):
-    """返回 (rgba uint8 HxWx4, fg 掩码)。白色背景被抠成透明。"""
+    """返回 (rgba uint8 HxWx4, fg 掩码)。背景被抠成透明。
+
+    背景色**不假定是白色**：从左上角像素取实测值当背景色。
+    2026-10-28 换成黑白剪影参考图后，背景是纯黑 —— 沿用「背景 = 255」的
+    覆盖率解法会把整圈抗锯齿边缘算成不透明（边缘发硬），所以这里把
+    背景色做成变量，明/暗底同一套代码都能解。
+    """
     im = Image.open(src_path).convert("RGB")
     w, h = im.size
 
-    # ① 从左上角 flood fill 连通到边界的白色背景
+    # 背景色：取四角里出现最多的那个（参考图是纯色底，四角必然一致）。
+    corners = [im.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+    bg_color = np.array(max(set(corners), key=corners.count), dtype=np.float64)
+
+    # ① 从左上角 flood fill 连通到边界的背景
     work = im.copy()
     ImageDraw.floodfill(work, (0, 0), (255, 0, 255), thresh=40)
     arr = np.asarray(work)
@@ -85,12 +95,13 @@ def matte(src_path):
         color[grow] = acc[grow] / cnt[grow][:, None]
         known |= grow
 
-    # ④ 逐通道解覆盖率：观测值 = alpha*C + (1-alpha)*255
-    denom = 255.0 - color
-    diff = 255.0 - rgb
+    # ④ 逐通道解覆盖率：观测值 = alpha*C + (1-alpha)*BG
+    #    BG 是实测背景色（白底 255 / 黑底 0），所以明底暗底同一套公式。
+    denom = color - bg_color[None, None, :]
+    num = rgb - bg_color[None, None, :]
     usable = np.abs(denom) > 25
     with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = np.where(usable, diff / np.where(usable, denom, 1.0), np.nan)
+        ratio = np.where(usable, num / np.where(usable, denom, 1.0), np.nan)
     # 有些像素三个通道都不可用（颜色接近纯白），整行都是 NaN，
     # nanmedian 会对这种切片发一条 RuntimeWarning。这些像素随后被
     # 「NaN -> 1.0」兜住，所以这里直接静音，别让构建日志里挂一条假警告。
@@ -205,19 +216,38 @@ def fit_into(rgba, size, coverage=0.84):
     return out_pm, out_a
 
 
+PLATES = {
+    "navy": NAVY,
+    "light": LIGHT,
+    "black": (0x10, 0x11, 0x14),
+    "none": None,
+}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--coverage", type=float, default=0.80)
+    # 只出指定底板；不给就三档都出（保持旧调用方式）。
+    ap.add_argument("--plate", choices=sorted(PLATES), default="")
+    # 反色：白蜂变黑蜂（黑条纹/眼睛变白）。只动前景 RGB，alpha 不动。
+    ap.add_argument("--invert", action="store_true")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
     rgba, fg = matte(args.source)
     rgba = square_canvas(crop_to_content(rgba, fg))
+    if args.invert:
+        # 只反转前景像素；透明区保持 0，避免半透明像素被翻成脏色。
+        rgb = rgba[:, :, :3].astype(np.uint16)
+        rgba[:, :, :3] = np.where(
+            rgba[:, :, 3:4] > 0, (255 - rgb).astype(np.uint8), 0)
 
+    plates = ([args.plate] if args.plate else ["navy", "light", "none"])
     for size in (16, 24, 32, 48, 64, 128, 256):
-        for name, plate in (("navy", NAVY), ("light", LIGHT), ("nopl ate", None)):
+        for name in plates:
+            plate = PLATES[name]
             pm, a = fit_into(rgba, size, args.coverage)
             if plate is None:
                 # 透明底：保存前要解除预乘，否则半透明边缘会发暗
@@ -235,7 +265,8 @@ def main():
                 np.clip(out_a, 0, 255).astype(np.uint8)]))
             img.save(os.path.join(args.outdir, "%s-%d.png" % (name, size)))
 
-    print("[OK] art rendered -> %s" % args.outdir)
+    print("[OK] art rendered -> %s (plate=%s, coverage=%.2f, invert=%s)"
+          % (args.outdir, ",".join(plates), args.coverage, args.invert))
 
 
 if __name__ == "__main__":
