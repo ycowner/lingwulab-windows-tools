@@ -638,26 +638,28 @@ if ($Source -eq 'art') {
     # 应用内两处标记用的徽章（位图，直接引用，不重绘）：
     #
     #   bee-badge-32.png       —— 标题栏文字前的图标位（16 DIP，200% DPI 下 32 物理像素）
-    #                            底板与 .ico 一致（带板），两种主题下都成立：
-    #                            底板本身提供了对比度。
+    #                            **透明底**白蜂（深色主题用）
+    #   bee-badge-32-light.png —— 同上，但蜂是**黑色**的（浅色主题用）
     #   bee-badge-64.png       —— 导航容器左端的 logo 位（28 DIP，200% DPI 下 56 物理像素）
-    #                            **透明底**（无底板）：导航容器本身已经是一个药丸形容器，
-    #                            再压一块近黑方底会像「挖了个洞」—— 2026-10-28 用户拍板去掉。
-    #   bee-badge-64-light.png —— 同上，但蜂是**黑色**的（浅色主题用）。
+    #                            **透明底**白蜂（深色主题用）
+    #   bee-badge-64-light.png —— 同上，但蜂是**黑色**的（浅色主题用）
     #
-    # 【为什么导航徽章要出两版】
-    # 蜂的原图是「白蜂 + 黑条纹」。透明底之后，白色那一坨在浅色主题的
-    # 药丸容器（≈ #F0F0F0）上等于隐形。所以浅色主题必须换成黑蜂，
-    # 深色主题用白蜂 —— 由 App.xaml 的 ThemeDictionaries 按主题选图。
+    # 【为什么这两处都要出两版】
+    # 蜂的原图是「白蜂 + 黑条纹」。透明底之后，白色那一坨在**浅色主题**的
+    # 容器（药丸 ≈ #F0F0F0、标题栏 ≈ #F3F3F3）上等于隐形。
+    # 所以浅色主题必须换成黑蜂，深色主题用白蜂 —— 由 App.xaml 的
+    # ThemeDictionaries 按主题选图。
+    #
+    # 【标题栏那枚为什么也去掉了底板】
+    # 2026-10-28 用户拍板：标题栏左上角那块近黑方底在浅色主题下是一坨黑块，
+    # 看着突兀。去掉底板后浅色主题用黑蜂、深色主题用白蜂即可，
+    # 标题栏与导航徽章从此是同一套规则。
     #
     # exe / 托盘图标仍然是近黑底板 + 白蜂：它在任务栏、托盘、资源管理器里
     # 各自有各的底色，透明底在那几处会随系统主题变来变去，反而不可控。
     $badgeTargets = @()
-    if ($Plate -ne 'none') {
-        $badgeTargets += , @{ From = ('{0}-32.png' -f $Plate); To = 'bee-badge-32.png' }
-    }
 
-    # 透明底的两版导航徽章：白蜂（深色主题）与黑蜂（浅色主题）
+    # 透明底的两版（白蜂来自 bee-source.png，黑蜂来自 bee-source-light.png）
     $noneDir = Join-Path $root (Join-Path 'build\bee-art' 'none')
     & python $artScript --source $artSource --outdir $noneDir --plate none --coverage $Coverage
     if ($LASTEXITCODE -ne 0) { throw "render-bee-art.py (transparent) failed (exit $LASTEXITCODE)." }
@@ -672,6 +674,8 @@ if ($Source -eq 'art') {
     & python $artScript --source $lightSource --outdir $lightDir --plate none --coverage $Coverage
     if ($LASTEXITCODE -ne 0) { throw "render-bee-art.py (light source) failed (exit $LASTEXITCODE)." }
 
+    $badgeTargets += , @{ From = 'none-32.png'; To = 'bee-badge-32.png';       Dir = $noneDir }
+    $badgeTargets += , @{ From = 'none-32.png'; To = 'bee-badge-32-light.png'; Dir = $lightDir }
     $badgeTargets += , @{ From = 'none-64.png'; To = 'bee-badge-64.png';       Dir = $noneDir }
     $badgeTargets += , @{ From = 'none-64.png'; To = 'bee-badge-64-light.png'; Dir = $lightDir }
 

@@ -31,13 +31,20 @@
             </ResourceDictionary.MergedDictionaries>
 
             <!--
-              【导航容器左端那枚小蜜蜂徽章 —— 本工程唯一一处用 ThemeDictionaries 的地方】
+              【应用内两枚小蜜蜂徽章 —— 本工程唯一一处用 ThemeDictionaries 的地方】
 
               为什么这里必须要主题字典（而下面那六个页签主色刻意不用）：
-              2026-10-28 用户拍板把导航徽章的底板去掉，改成**透明底**。
+              2026-10-28 用户拍板把应用内的徽章底板去掉，改成**透明底**。
               但蜂的原图是「白蜂 + 黑条纹」—— 透明底之后，
-              白色那一坨在**浅色主题**的药丸容器（≈ #F0F0F0）上等于隐形。
+              白色那一坨在**浅色主题**的容器（药丸 ≈ #F0F0F0、标题栏 ≈ #F3F3F3）上等于隐形。
               所以深色主题用白蜂、浅色主题必须换成黑蜂，两张图由主题字典选。
+
+              两枚徽章：
+                BeeNavLogo    —— 导航容器左端，28 DIP（bee-badge-64 / -light）
+                BeeTitleLogo  —— 标题栏左上角，16 DIP（bee-badge-32 / -light）
+              标题栏那枚是 2026-10-28 用户看截图指出「左上角这个也要改」之后
+              才去掉的底板：浅色主题下那块近黑方底是一坨黑块，看着突兀。
+              去掉之后，标题栏与导航徽章是同一套规则。
 
               【浅色主题那张不是把白蜂反色，而是另一张源图】
               2026-10-28 用户另外给了一张「可爱黑白卡通蜜蜂图标.png」（黑蜂白底）。
@@ -51,8 +58,8 @@
               下面那条注释说「ThemeDictionaries 要求每个键在 Light / HighContrast
               两套里都给出值，少一套就抛 0x802B000A」——
               那个坑的成因是**分支不全**，不是 ThemeDictionaries 本身有毒。
-              这里三个分支（Default / Light / HighContrast）全部给出了 BeeNavLogo，
-              缺分支的事不会发生。
+              这里三个分支（Default / Light / HighContrast）全部给出了
+              BeeNavLogo 与 BeeTitleLogo，缺分支的事不会发生。
 
               【HighContrast 选白蜂的理由】
               Windows 的高对比度主题多数是黑底（白字），
@@ -66,14 +73,20 @@
                 <ResourceDictionary x:Key="Default">
                     <BitmapImage x:Key="BeeNavLogo"
                                  UriSource="ms-appx:///Assets/bee-badge-64.png" />
+                    <BitmapImage x:Key="BeeTitleLogo"
+                                 UriSource="ms-appx:///Assets/bee-badge-32.png" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Light">
                     <BitmapImage x:Key="BeeNavLogo"
                                  UriSource="ms-appx:///Assets/bee-badge-64-light.png" />
+                    <BitmapImage x:Key="BeeTitleLogo"
+                                 UriSource="ms-appx:///Assets/bee-badge-32-light.png" />
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="HighContrast">
                     <BitmapImage x:Key="BeeNavLogo"
                                  UriSource="ms-appx:///Assets/bee-badge-64.png" />
+                    <BitmapImage x:Key="BeeTitleLogo"
+                                 UriSource="ms-appx:///Assets/bee-badge-32.png" />
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
 

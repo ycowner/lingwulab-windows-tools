@@ -499,9 +499,12 @@
     三张图各自的底板（2026-10-28）：
       bee-badge-64.png       —— 导航 logo，**透明底**白蜂（深色主题用）
       bee-badge-64-light.png —— 导航 logo，**透明底**黑蜂（浅色主题用）
-      bee-badge-32.png       —— 标题栏图标，近黑 #101114 圆角方块底板 + 白蜂
+      bee-badge-32.png       —— 标题栏图标，**透明底**白蜂（深色主题用）
+      bee-badge-32-light.png —— 标题栏图标，**透明底**黑蜂（浅色主题用）
     导航那枚去掉底板是用户拍板的：药丸容器里再压一块方底像「挖了个洞」。
-    但透明底的白色在浅色主题上会隐形，所以多出一张黑蜂版，
+    标题栏那枚也去掉了（2026-10-28 用户看截图指出）：浅色主题下那块近黑方底
+    是一坨黑块，看着突兀。
+    但透明底的白色在浅色主题上会隐形，所以两处各出深/浅两版，
     由 App.xaml 的 ThemeDictionaries 按主题选。
 
     尺寸是按 DPI 留的余量，不是随手取的整数：
@@ -523,6 +526,10 @@
     </Content>
     <Content Include="resources\bee-badge-32.png">
       <Link>Assets\bee-badge-32.png</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="resources\bee-badge-32-light.png">
+      <Link>Assets\bee-badge-32-light.png</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
